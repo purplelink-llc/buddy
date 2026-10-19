@@ -196,7 +196,8 @@ struct PillView: View {
             Guy(mood: store.overallMood, size: ui.geometry.barHeight * 0.66, urgent: store.peek != nil)
                 .padding(.leading, 12)
             Spacer()
-            badge.padding(.trailing, 14)
+            // The space beside the notch is 46 pt; the badge never reaches under the camera.
+            badge.frame(maxWidth: 33, alignment: .trailing).padding(.trailing, 7)
         }
         .contentShape(Rectangle())
         .onTapGesture { store.openTop() }
@@ -212,6 +213,9 @@ struct PillView: View {
                 .background(Circle().fill(.orange))
         } else if !store.pausedSessions.isEmpty {
             countdown
+        } else if !store.disconnectedSessions.isEmpty {
+            Image(systemName: "wifi.slash").font(.system(size: 11, weight: .bold)).foregroundStyle(.purple)
+                .help("Chats stopped by a dropped connection; Buddy retries them when you're back online")
         } else if store.unseenDoneCount > 0 {
             HStack(spacing: 3) {
                 Image(systemName: "checkmark").font(.system(size: 11, weight: .bold))
@@ -234,14 +238,18 @@ struct PillView: View {
     @ViewBuilder private var countdown: some View {
         Group {
             if let reset = store.limitResetsAt, reset > Date() {
-                Text(timerInterval: Date()...reset, countsDown: true)
-                    .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                // Short enough for the space beside the notch: "1h 14m", then "14:25".
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    Text(Store.shortCountdown(reset.timeIntervalSince(context.date)))
+                }
+                .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
             } else {
                 Image(systemName: "arrow.clockwise").font(.system(size: 11, weight: .bold))
             }
         }
         .foregroundStyle(.purple)
-        .frame(maxWidth: 44)
     }
 
     /// Shown while a usage limit has chats paused: countdown, auto-continue, continue now.

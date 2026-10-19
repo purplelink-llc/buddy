@@ -13,6 +13,7 @@ Buddy is an independent open-source project by Purplelink LLC. It is not made by
 - **Finished:** Buddy smiles, plays a chime, and says how long the turn took ("Finished in 3m 12s"). A green check stays until you hover the notch.
 - **Jump to it:** click a session to open that exact chat in the Claude app, that exact Terminal or iTerm2 tab, or that project's VS Code or Cursor window. Click or swipe a row to clear it.
 - **Usage limits:** when a limit pauses your chats, Buddy counts down to the reset and lists the paused chats (including ones paused before Buddy was running). **Continue now** types "continue" into each of them, and **Auto** does it for you a few minutes after the reset.
+- **Dropped connections:** when a chat stops because the network dropped or the Mac went to sleep, Buddy retries it on its own once you are back online. It presses the chat's **Try again** button (or types "continue"), at most three times.
 
 ![The usage-limit banner: a countdown, two paused chats, and Auto turned on](design/demo/limit.png)
 
@@ -37,7 +38,7 @@ Buddy asks for more than most small apps, so here is all of it.
 - **Your Claude Code events.** Claude Code runs `buddy-hook` at each step of a session (a prompt, a tool call, a question, a finish). The hook writes the event to a folder that exists only while Buddy is running. It adds about 4 to 5 ms per event on an M-series Mac. When Buddy is closed, the hook does nothing.
 - **The ends of your session transcripts.** Buddy reads the last 64 KB of a transcript in two cases. The first is to notice that you pressed Esc (Claude Code sends no event for that). The second is to find chats a usage limit paused. Buddy never sends them anywhere.
 - **The Claude app's chat list.** Buddy reads the first 16 KB of each chat file in `~/Library/Application Support/Claude`. It uses them to show chat titles instead of folder names and to find paused chats.
-- **Accessibility (optional).** Buddy uses it only to type "continue" into paused Claude app chats. It waits until the screen is unlocked (and, for **Auto**, until you stop typing), then puts you back in the app you were using.
+- **Accessibility (optional).** Buddy uses it only to type "continue" into paused Claude app chats, or to press **Try again** in a chat a dropped connection stopped. It waits until the screen is unlocked (and, for **Auto**, until you stop typing), then puts you back in the app you were using.
 - **Automation (optional).** macOS asks once before Buddy brings a Terminal or iTerm2 tab forward or sends "continue" to it.
 
 Buddy makes no network connections. Everything stays on your Mac.

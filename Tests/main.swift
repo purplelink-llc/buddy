@@ -33,6 +33,9 @@ MainActor.assumeIsolated {
     expect(Store.project("/Users/me/Code/Acme") == "Acme", "plain project")
     expect(Store.project("/Users/me/Code/Acme/.claude/worktrees/login-fix") == "Acme › login-fix", "app worktree")
     expect(Store.project("/Users/me/_worktrees/Widgets/refcheck/src") == "Widgets › refcheck", "_worktrees")
+    expect(Store.shortCountdown(4465) == "1h 14m" && Store.shortCountdown(3600) == "1h 0m", "hours and minutes")
+    expect(Store.shortCountdown(865) == "14:25" && Store.shortCountdown(59.2) == "1:00" && Store.shortCountdown(-3) == "0:00",
+           "minutes and seconds under an hour, got \(Store.shortCountdown(865)) \(Store.shortCountdown(59.2))")
     expect(Store.duration(42) == "42s" && Store.duration(192) == "3m 12s" && Store.duration(3900) == "1h 5m", "durations")
 
     // MARK: header
@@ -246,6 +249,50 @@ MainActor.assumeIsolated {
     expect(backupsAfter.count == 1, "a second connect writes nothing new")
     try! setup.disconnect()
     expect(!setup.isConnected && !FileManager.default.fileExists(atPath: setup.hookURL.path), "disconnect removes entries and the hook")
+
+    // MARK: chats stopped by a dropped connection
+    for message in ["API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)",
+                    "API Error: Connection lost mid-response. The response above may be incomplete.",
+                    "API Error: Your computer went to sleep mid-response. The response above may be incomplete."] {
+        expect(Store.isConnectionError("server_error", message), "network error: \(message.prefix(40))")
+    }
+    expect(!Store.isConnectionError("server_error", "API Error: 500 Internal server error"), "a plain 500 is not a dropped connection")
+    expect(!Store.isConnectionError("rate_limit", "Can't reach the API server"), "a limit is never a connection drop")
+    expect(!Store.isConnectionError("authentication_failed", "Not logged in"), "auth errors are not connection drops")
+
+    let netClock = Date()
+    var retried: [[String]] = []
+    var stoppedWhenCalled = -1
+    let net = Store(defaults: defaults, sound: { _ in }, now: { netClock }, titles: titles)
+    net.onRetry = { retried.append($0.map(\.id)) }
+    net.onConnectionLost = { stoppedWhenCalled = net.disconnectedSessions.count }
+    net.apply([event(#"{"hook_event_name":"UserPromptSubmit","session_id":"X","cwd":"/p/acme","prompt":"go"}"#, at: netClock),
+               event(#"{"hook_event_name":"StopFailure","session_id":"X","error":"server_error","last_assistant_message":"API Error: Connection lost mid-response."}"#, at: netClock)])
+    expect(net.disconnectedSessions.map(\.id) == ["X"] && net.pausedSessions.isEmpty && net.hasNews,
+           "connection drop is its own kind of pause (no limit banner)")
+    expect(net.sessions["X"]?.activity == Store.connectionLostText, "row says it will retry")
+    expect(stoppedWhenCalled == 1, "the app is told after the chat is saved as stopped, got \(stoppedWhenCalled)")
+    for _ in 0..<4 { net.retryDisconnected(fresh: false) }
+    expect(retried.count == 3, "at most three automatic tries, got \(retried.count)")
+    net.retryDisconnected(fresh: true)
+    expect(retried.count == 4, "network back: tries start over")
+    net.apply([event(#"{"hook_event_name":"PreToolUse","session_id":"X","tool_name":"Read","tool_input":{}}"#, at: netClock)])
+    expect(net.disconnectedSessions.isEmpty && net.workingCount == 1, "a retried chat that resumes is working again")
+    net.apply([event(#"{"hook_event_name":"StopFailure","session_id":"Y","error":"server_error","last_assistant_message":"API Error: 500 Internal server error"}"#, at: netClock)])
+    expect(net.sessions["Y"]?.mood == .attention, "other server errors still need you")
+
+    // The scan adopts a recent drop but never an old one.
+    let iso = ISO8601DateFormatter()
+    let dropText = "API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)"
+    func dropEntry(_ date: Date) -> String {
+        #"{"type":"assistant","isApiErrorMessage":true,"error":"server_error","timestamp":"\#(iso.string(from: date))","message":{"role":"assistant","content":[{"type":"text","text":"\#(dropText)"}]}}"#
+    }
+    chat("local_n1", cli: "cli-net-recent", title: "Dropped just now", transcript: [userPrompt, dropEntry(Date().addingTimeInterval(-120))])
+    chat("local_n2", cli: "cli-net-old", title: "Dropped long ago", transcript: [userPrompt, dropEntry(Date().addingTimeInterval(-7 * 3600))])
+    let netScan = scanner.run()
+    let recent = netScan.first { $0.id == "cli-net-recent" }
+    expect(recent?.pauseReason == .connection && recent?.limitResetsAt == nil, "scan finds a recent connection drop")
+    expect(!netScan.contains { $0.id == "cli-net-old" }, "scan leaves a 7-hour-old drop alone")
 
     // MARK: interrupt detection from the transcript tail
     func transcript(_ name: String, _ lines: [String]) -> String {

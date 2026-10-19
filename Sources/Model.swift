@@ -28,6 +28,8 @@ struct Host: Equatable {
     var tty = ""
 }
 
+enum PauseReason { case limit, connection }
+
 struct Session: Identifiable {
     let id: String
     var project: String
@@ -51,6 +53,10 @@ struct Session: Identifiable {
     var limitResetsAt: Date?
     /// Found by scanning transcripts (paused before Buddy was listening), not by a live event.
     var fromScan = false
+    /// Why a paused session stopped: a usage limit, or a dropped connection.
+    var pauseReason = PauseReason.limit
+    /// Automatic retries since the connection dropped (capped, so Buddy never loops).
+    var retries = 0
 
     var name: String { title.isEmpty ? project : title }
 }
@@ -102,6 +108,10 @@ final class Store: ObservableObject {
     /// Called with the sessions still paused a while after the limit reset (manual: false)
     /// or by "Continue now" (manual: true); the app types "continue" into them.
     var onContinue: (([Session], _ manual: Bool) -> Void)?
+    /// Called with chats a dropped connection stopped, when it is time to retry them.
+    var onRetry: (([Session]) -> Void)?
+    /// Called when a live session stops on a connection error (the app may retry soon).
+    var onConnectionLost: (() -> Void)?
     /// What the continue run is doing, shown in the limit banner.
     @Published var continueStatus: String?
     private var watchdog: Timer?
@@ -151,13 +161,20 @@ final class Store: ObservableObject {
     var unseenDoneCount: Int { visible.filter { $0.mood == .done && !$0.acknowledged }.count }
 
     /// Every session paused by a usage limit, including ones cleared from the list.
-    var pausedSessions: [Session] { sessions.values.filter { $0.mood == .paused } }
+    var pausedSessions: [Session] { sessions.values.filter { $0.mood == .paused && $0.pauseReason == .limit } }
+
+    /// Chats a dropped connection stopped; Buddy retries them when the network is back.
+    var disconnectedSessions: [Session] {
+        sessions.values.filter { $0.mood == .paused && $0.pauseReason == .connection }
+    }
 
     /// The reset Buddy is counting down to (one account, so one limit for every chat).
     var limitResetsAt: Date? { pausedSessions.compactMap(\.limitResetsAt).max() }
 
     /// Worth showing the collapsed pill for.
-    var hasNews: Bool { attentionCount + workingCount + unseenDoneCount > 0 || !pausedSessions.isEmpty }
+    var hasNews: Bool {
+        attentionCount + workingCount + unseenDoneCount > 0 || !pausedSessions.isEmpty || !disconnectedSessions.isEmpty
+    }
 
     var overallMood: Mood {
         visible.filter { $0.mood != .done || !$0.acknowledged }.map(\.mood).max() ?? .idle
@@ -187,6 +204,7 @@ final class Store: ObservableObject {
 
         switch e.name {
         case "UserPromptSubmit":
+            s.retries = 0
             // Prompts that are only app-injected <system-reminder> blocks keep the last real one.
             let prompt = Self.oneLine(Self.withoutTags(e.json["prompt"] as? String ?? ""), 60)
             if !prompt.isEmpty { s.prompt = prompt }
@@ -216,8 +234,16 @@ final class Store: ObservableObject {
             // "You've hit your session limit · resets 3:30pm (America/Chicago)"
             let message = e.json["last_assistant_message"] as? String ?? ""
             s.mood = .paused
+            s.pauseReason = .limit
             s.limitResetsAt = ResetTime.parse(message, after: e.date)
             s.activity = "Paused by your usage limit"
+            s.turnStarted = nil
+        case "StopFailure" where Self.isConnectionError(e.json["error"] as? String,
+                                                        e.json["last_assistant_message"] as? String ?? ""):
+            // "Can't reach the API server", "Connection lost mid-response", "went to sleep"
+            s.mood = .paused
+            s.pauseReason = .connection
+            s.activity = Self.connectionLostText
             s.turnStarted = nil
         case "StopFailure":
             let error = (e.json["error"] as? String ?? "error").replacingOccurrences(of: "_", with: " ")
@@ -241,6 +267,9 @@ final class Store: ObservableObject {
         if s.mood != .paused { s.limitResetsAt = nil }
 
         sessions[s.id] = s
+        if live, s.mood == .paused, s.pauseReason == .connection, before != .paused {
+            onConnectionLost?()  // after saving, so the app sees this chat as stopped
+        }
         if peek == s.id, s.mood != before { endPeek() }
         if s.mood == .paused || before == .paused { scheduleLimitTimers() }
         guard live, s.mood != before else { return }
@@ -422,6 +451,33 @@ final class Store: ObservableObject {
         scheduleLimitTimers()
     }
 
+    static let maxRetries = 3
+    nonisolated static let connectionLostText = "Connection lost · retrying when you're back online"
+
+    /// A server_error (or unknown error) whose message says the network dropped, as
+    /// Claude Code words it: "Can't reach the API server ... (ENOTFOUND)", "Connection lost
+    /// mid-response", "Your computer went to sleep mid-response".
+    nonisolated static func isConnectionError(_ error: String?, _ message: String) -> Bool {
+        guard error == "server_error" || error == "unknown" || error == nil else { return false }
+        let pattern = #"(?i)can'?t reach|cannot reach|connection (lost|reset|refused|closed|error|went idle)|went to sleep|network|internet|offline|ENOTFOUND|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|timed out"#
+        return message.range(of: pattern, options: .regularExpression) != nil
+    }
+
+    /// Hands chats a dropped connection stopped to the app to retry. `fresh` (the network
+    /// came back, or the Mac woke) restarts the attempt count; otherwise each chat gets at
+    /// most `maxRetries` tries.
+    func retryDisconnected(fresh: Bool) {
+        var due: [Session] = []
+        for var s in disconnectedSessions {
+            if fresh { s.retries = 0 }
+            guard s.retries < Self.maxRetries else { continue }
+            s.retries += 1
+            sessions[s.id] = s
+            due.append(s)
+        }
+        if !due.isEmpty { onRetry?(due) }
+    }
+
     /// Hands every still-paused session to the typer ("Continue now", or the timer).
     func continuePaused(manual: Bool = true) {
         let paused = pausedSessions
@@ -445,6 +501,13 @@ final class Store: ObservableObject {
             return "\(parts[i + 1]) › \(parts[i + 2])"
         }
         return parts.last ?? "Claude"
+    }
+
+    /// The collapsed pill's countdown: "1h 14m" for an hour or more, "14:25" under an hour.
+    nonisolated static func shortCountdown(_ seconds: TimeInterval) -> String {
+        let s = max(0, Int(seconds.rounded(.up)))
+        if s >= 3600 { return "\(s / 3600)h \(s % 3600 / 60)m" }
+        return String(format: "%d:%02d", s / 60, s % 60)
     }
 
     nonisolated static func duration(_ seconds: TimeInterval) -> String {
@@ -530,9 +593,10 @@ enum Transcript {
         return false
     }
 
-    /// The limit message and its time, when the newest real entry is a usage-limit error
-    /// (bookkeeping such as cost-state may follow it; a newer message means it moved on).
-    static func limitPause(at path: String, tailBytes: UInt64 = 64 * 1024) -> (message: String, date: Date)? {
+    /// The error, its message and its time, when the newest real entry is a usage-limit error
+    /// or a dropped-connection error (bookkeeping such as cost-state may follow it; a newer
+    /// message means the chat moved on).
+    static func stoppedEntry(at path: String, tailBytes: UInt64 = 64 * 1024) -> (error: String, message: String, date: Date)? {
         guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
         defer { try? handle.close() }
         guard let size = try? handle.seekToEnd() else { return nil }
@@ -546,11 +610,12 @@ enum Transcript {
                   let type = entry["type"] as? String, type == "user" || type == "assistant",
                   entry["isMeta"] as? Bool != true else { continue }
             guard type == "assistant", entry["isApiErrorMessage"] as? Bool == true,
-                  entry["error"] as? String == "rate_limit" else { return nil }
+                  let error = entry["error"] as? String else { return nil }
             let parts = (entry["message"] as? [String: Any])?["content"] as? [[String: Any]] ?? []
             let text = parts.compactMap { $0["text"] as? String }.joined(separator: " ")
+            guard error == "rate_limit" || Store.isConnectionError(error, text) else { return nil }
             let date = (entry["timestamp"] as? String).flatMap(parseTimestamp) ?? Date()
-            return (text, date)
+            return (error, text, date)
         }
         return nil
     }
@@ -682,10 +747,12 @@ enum ResetTime {
 final class PausedScan: @unchecked Sendable {
     /// How far back to look; a weekly limit can pause a chat for days.
     static let lookBack: TimeInterval = 8 * 86400
+    /// Connection drops older than this are left alone (they are not retried).
+    static let connectionLookBack: TimeInterval = 6 * 3600
 
     let sessionsRoot: URL
     let projectsRoot: URL
-    private var cache: [String: (modified: Date, pause: (message: String, date: Date)?)] = [:]
+    private var cache: [String: (modified: Date, pause: (error: String, message: String, date: Date)?)] = [:]
 
     init(sessionsRoot: URL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Claude/claude-code-sessions", isDirectory: true),
@@ -716,8 +783,15 @@ final class PausedScan: @unchecked Sendable {
             s.host = Host(bundleID: Jump.claudeApp, desktopSessionID: file.deletingPathExtension().lastPathComponent)
             s.transcriptPath = transcript.path
             s.mood = .paused
-            s.activity = "Paused by your usage limit"
-            s.limitResetsAt = ResetTime.parse(pause.message, after: pause.date)
+            if pause.error == "rate_limit" {
+                s.activity = "Paused by your usage limit"
+                s.limitResetsAt = ResetTime.parse(pause.message, after: pause.date)
+            } else {
+                // Only recent drops: never auto-retry a chat that stopped hours ago.
+                guard now.timeIntervalSince(pause.date) < Self.connectionLookBack else { continue }
+                s.pauseReason = .connection
+                s.activity = Store.connectionLostText
+            }
             s.updated = pause.date
             s.acknowledged = true
             s.fromScan = true
@@ -726,10 +800,10 @@ final class PausedScan: @unchecked Sendable {
         return found
     }
 
-    private func pause(at transcript: URL) -> (message: String, date: Date)? {
+    private func pause(at transcript: URL) -> (error: String, message: String, date: Date)? {
         guard let modified = Self.modified(transcript) else { return nil }
         if let hit = cache[transcript.path], hit.modified == modified { return hit.pause }
-        let pause = Transcript.limitPause(at: transcript.path)
+        let pause = Transcript.stoppedEntry(at: transcript.path)
         cache[transcript.path] = (modified, pause)
         return pause
     }

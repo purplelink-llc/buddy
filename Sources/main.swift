@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import Network
 import ServiceManagement
 import SwiftUI
 
@@ -11,6 +12,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let pausedScan = PausedScan()
     let scanQueue = DispatchQueue(label: "llc.purplelink.Buddy.paused-scan", qos: .utility)
     var scanTimer: Timer?
+    /// Retries chats a dropped connection stopped, once the network is back.
+    let pathMonitor = NWPathMonitor()
+    var online = true
+    var retryTask: Task<Void, Never>?
     var ui: UIState!
     lazy var inbox = Inbox { [weak self] events in
         MainActor.assumeIsolated { self?.store.apply(events) }
@@ -82,6 +87,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         expireTimer = timer
 
         store.onContinue = { [weak self] sessions, manual in self?.continuer.run(sessions, manual: manual) }
+        store.onRetry = { [weak self] sessions in self?.continuer.retry(sessions) }
+        store.onConnectionLost = { [weak self] in
+            // The Mac thinks it is online (DNS or a brief blip): try again soon, waiting
+            // longer each time; retryDisconnected caps the attempts.
+            guard let self, self.online else { return }
+            let attempt = self.store.disconnectedSessions.map(\.retries).max() ?? 0
+            self.scheduleRetry(after: 20 * Double(attempt + 1), fresh: false)
+        }
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            let up = path.status == .satisfied
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.networkChanged(up) } }
+        }
+        pathMonitor.start(queue: DispatchQueue(label: "llc.purplelink.Buddy.network", qos: .utility))
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification,
+                                                          object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.scheduleRetry(after: 15, fresh: true) }
+        }
         inbox.start()
 
         scanForPausedChats()
@@ -99,12 +121,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func networkChanged(_ up: Bool) {
+        let wasOnline = online
+        online = up
+        guard up != wasOnline else { return }  // macOS also reports the state once at launch
+        Log.note("network \(up ? "back" : "lost")")
+        if up { scheduleRetry(after: 5, fresh: true) }
+    }
+
+    /// Retries stopped chats after `seconds`, if still online. A newer schedule replaces it.
+    private func scheduleRetry(after seconds: Double, fresh: Bool) {
+        guard !store.disconnectedSessions.isEmpty else { return }
+        retryTask?.cancel()
+        retryTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(seconds))
+            guard !Task.isCancelled, let self, self.online else { return }
+            Log.note("retrying \(self.store.disconnectedSessions.count) chats stopped by a dropped connection")
+            self.store.retryDisconnected(fresh: fresh)
+        }
+    }
+
     private func scanForPausedChats() {
         let scan = pausedScan
         scanQueue.async {
             let found = scan.run()
             DispatchQueue.main.async { [weak self] in
-                MainActor.assumeIsolated { self?.store.adoptScan(found) }
+                MainActor.assumeIsolated {
+                    self?.store.adoptScan(found)
+                    self?.scheduleRetry(after: 10, fresh: false)  // chats that dropped just before launch
+                }
             }
         }
     }

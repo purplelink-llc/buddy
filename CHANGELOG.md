@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0
+
+### Added
+- Chats stopped by a dropped connection ("Can't reach the API server", "Connection lost mid-response", or the Mac going to sleep mid-response) now recover on their own. Buddy shows them with a no-connection badge, and when the network comes back (or the Mac wakes) it opens each one and presses Try again, or types "continue". At most three tries per drop.
+
+### Fixed
+- The countdown beside the notch no longer runs under the camera. It now reads "1h 14m", then "14:25" under an hour. The banner keeps the full timer.
+
 ## 0.2.1
 
 ### Changed

@@ -31,7 +31,13 @@ final class Continuer {
 
     /// `manual`: you pressed Continue now, so start at once. Otherwise (the timer after a
     /// reset) wait until you have stopped typing and clicking for a moment.
-    func run(_ sessions: [Session], manual: Bool) {
+    /// Chats a dropped connection stopped: press the chat's Try again button when it has
+    /// one, otherwise type "continue". Waits like the automatic run (never mid-typing).
+    func retry(_ sessions: [Session]) {
+        run(sessions, manual: false, tryAgainFirst: true)
+    }
+
+    func run(_ sessions: [Session], manual: Bool, tryAgainFirst: Bool = false) {
         guard !running else { return }
         running = true
         Log.note("continuing \(sessions.count) paused chats (\(manual ? "Continue now" : "automatic"))")
@@ -59,7 +65,7 @@ final class Continuer {
                     store.continueStatus = "Continuing \(index + 1) of \(sessions.count)…"
                     Jump.desktopChat(sessionID: sessionID).perform()
                     borrowedFocus = true
-                    let outcome = await continueOpenChat()
+                    let outcome = await continueOpenChat(tryAgainFirst: tryAgainFirst)
                     if outcome.hasPrefix("sent") { sent += 1 }
                     Log.note("continue \(current.name): \(outcome)")
                 default:
@@ -78,8 +84,17 @@ final class Continuer {
 
     /// Types into the chat the deep link just opened: waits for its Prompt box, focuses it,
     /// types, presses Return, and clicks Send if the text is still sitting there.
-    private func continueOpenChat() async -> String {
+    private func continueOpenChat(tryAgainFirst: Bool = false) async -> String {
         try? await Task.sleep(for: .milliseconds(1200))  // let the app switch chats
+        if tryAgainFirst {
+            for _ in 0..<12 {  // the error card may take a moment to appear
+                if let button = ClaudeUI.button(labelled: "Try again") {
+                    ClaudeUI.press(button)
+                    return "sent (pressed Try again)"
+                }
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+        }
         var prompt: AXUIElement?
         for _ in 0..<40 {  // an old chat may take a few seconds to be ready
             guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == Jump.claudeApp else {
@@ -203,8 +218,9 @@ final class Continuer {
 }
 
 /// Reads the Claude app's interface through the Accessibility API: its message box (an
-/// AXTextArea labelled "Prompt") and Send button. Only these two are touched; the only
-/// value read is the Prompt box's, to see whether "continue" was sent.
+/// AXTextArea labelled "Prompt"), its Send button, and the Try again button of a chat whose
+/// connection dropped. The only value read is the Prompt box's, to see whether "continue"
+/// was sent.
 @MainActor
 enum ClaudeUI {
     static func prompt() -> AXUIElement? {
@@ -214,11 +230,14 @@ enum ClaudeUI {
         return search { isPrompt($0) }
     }
 
-    static func sendButton() -> AXUIElement? {
+    static func sendButton() -> AXUIElement? { button(labelled: "send") }
+
+    /// The first button whose title or description contains `text` (case-insensitive).
+    static func button(labelled text: String) -> AXUIElement? {
         search { el in
             guard string(el, kAXRoleAttribute) == kAXButtonRole as String else { return false }
             let label = string(el, kAXDescriptionAttribute) + " " + string(el, kAXTitleAttribute)
-            return label.range(of: "send", options: .caseInsensitive) != nil
+            return label.range(of: text, options: .caseInsensitive) != nil
         }
     }
 
