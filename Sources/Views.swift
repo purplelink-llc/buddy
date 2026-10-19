@@ -12,8 +12,9 @@ extension Mood {
     }
 }
 
-/// The little guy: a Claude-coloured squircle with eyes. Glances around while Claude
-/// works, hops when it needs you, smiles when it is done, blinks when idle.
+/// The little guy: a purple Lab/Chow pup's face with upright triangle ears. Glances around
+/// while Claude works, hops when it needs you, smiles with his tongue out when it is done,
+/// blinks when idle.
 struct Guy: View {
     let mood: Mood
     let size: CGFloat
@@ -24,34 +25,61 @@ struct Guy: View {
     @State private var look: CGFloat = 0
     @State private var hop = false
 
-    private let skin = Color(red: 0.85, green: 0.47, blue: 0.34)
+    private let fur = Color(red: 0.64, green: 0.50, blue: 0.90)
+    private let furShade = Color(red: 0.50, green: 0.36, blue: 0.80)
+    private let light = Color(red: 0.88, green: 0.81, blue: 0.98)
+    private let ink = Color(red: 0.13, green: 0.09, blue: 0.20)
 
     var body: some View {
+        let s = size
         ZStack {
-            RoundedRectangle(cornerRadius: size * 0.34, style: .continuous)
-                .fill(skin.gradient)
-            HStack(spacing: size * 0.18) { eye; eye }
-                .offset(y: -size * 0.03)
+            ear.position(x: s * 0.25, y: s * 0.25)
+            ear.scaleEffect(x: -1).position(x: s * 0.75, y: s * 0.25)
+            RoundedRectangle(cornerRadius: s * 0.34, style: .continuous)
+                .fill(LinearGradient(colors: [fur, furShade], startPoint: .top, endPoint: .bottom))
+                .frame(width: s * 0.94, height: s * 0.72)
+                .position(x: s * 0.5, y: s * 0.62)
+            if mood == .done {  // over the head, under the muzzle, so it hangs out from under it
+                Capsule().fill(Color(red: 0.98, green: 0.47, blue: 0.58))
+                    .frame(width: s * 0.13, height: s * 0.16)
+                    .position(x: s * 0.5, y: s * 0.91)
+            }
+            Ellipse().fill(light)
+                .frame(width: s * 0.46, height: s * 0.27)
+                .position(x: s * 0.5, y: s * 0.78)
+            Ellipse().fill(ink)
+                .frame(width: s * 0.17, height: s * 0.11)
+                .position(x: s * 0.5, y: s * 0.70)
+            eye.position(x: s * 0.31 + look * s * 0.025, y: s * 0.54)
+            eye.position(x: s * 0.69 + look * s * 0.025, y: s * 0.54)
         }
-        .frame(width: size, height: size * 0.88)
-        .offset(y: hop ? -size * 0.16 : 0)
+        .frame(width: s, height: s)
+        .offset(y: hop ? -s * 0.16 : 0)
         .task(id: "\(mood.rawValue)-\(urgent)") { await animate() }
+    }
+
+    /// A short triangle ear pointing straight up, with a lighter inside.
+    private var ear: some View {
+        ZStack {
+            Ear().fill(fur)
+            Ear().fill(light.opacity(0.85))
+                .frame(width: size * 0.16, height: size * 0.12)
+                .offset(x: size * 0.01, y: size * 0.035)
+        }
+        .frame(width: size * 0.34, height: size * 0.25)
     }
 
     @ViewBuilder private var eye: some View {
         if mood == .done {
-            HappyEye().stroke(.white, style: StrokeStyle(lineWidth: size * 0.07, lineCap: .round))
-                .frame(width: size * 0.2, height: size * 0.12)
+            HappyEye().stroke(ink, style: StrokeStyle(lineWidth: size * 0.06, lineCap: .round))
+                .frame(width: size * 0.15, height: size * 0.08)
         } else {
-            let wide = mood == .attention
-            Capsule().fill(.white)
-                .frame(width: size * 0.2, height: size * (wide ? 0.32 : 0.27))
-                .overlay(
-                    Circle().fill(.black)
-                        .frame(width: size * 0.11)
-                        .offset(x: look * size * 0.04, y: wide ? -size * 0.03 : 0)
-                )
-                .scaleEffect(y: blink ? 0.1 : 1)
+            let d = size * (mood == .attention ? 0.16 : 0.13)
+            Circle().fill(ink)
+                .frame(width: d, height: d)
+                .overlay(Circle().fill(.white).frame(width: d * 0.36, height: d * 0.36)
+                    .offset(x: -d * 0.18, y: -d * 0.18))
+                .scaleEffect(y: blink ? 0.12 : 1)
         }
     }
 
@@ -90,6 +118,20 @@ struct Guy: View {
 
     private func pause(_ seconds: Double) async {
         try? await Task.sleep(for: .seconds(seconds))
+    }
+}
+
+/// An upright triangle with a softly rounded tip and base corners.
+struct Ear: Shape {
+    func path(in r: CGRect) -> Path {
+        var p = Path()
+        p.move(to: CGPoint(x: r.minX, y: r.maxY))
+        p.addLine(to: CGPoint(x: r.midX - r.width * 0.08, y: r.minY + r.height * 0.08))
+        p.addQuadCurve(to: CGPoint(x: r.midX + r.width * 0.08, y: r.minY + r.height * 0.08),
+                       control: CGPoint(x: r.midX, y: r.minY - r.height * 0.04))
+        p.addLine(to: CGPoint(x: r.maxX, y: r.maxY))
+        p.closeSubpath()
+        return p
     }
 }
 

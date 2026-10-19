@@ -14,18 +14,17 @@ func dark(_ x: Int, _ y: Int) -> Bool {
     guard let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { return false }
     return c.redComponent + c.greenComponent + c.blueComponent < 0.6  // navy/near-black
 }
-// Bounding box of the dark square: scan rows and columns through the middle.
-var minX = w, maxX = 0, minY = h, maxY = 0
-for y in stride(from: 0, to: h, by: 2) where dark(w / 2, y) { minY = min(minY, y); maxY = max(maxY, y) }
-for x in stride(from: 0, to: w, by: 2) where dark(x, h / 2) { minX = min(minX, x); maxX = max(maxX, x) }
-// The middle row/column cross the orange body too; the square's edges are what we want.
-var minX2 = w, maxX2 = 0
-let probeY = minY + (maxY - minY) / 8  // near the top edge, above the character
-for x in 0..<w where dark(x, probeY) { minX2 = min(minX2, x); maxX2 = max(maxX2, x) }
-let side = max(maxX2 - minX2, maxY - minY)
-let cx = (minX2 + maxX2) / 2, cy = (minY + maxY) / 2
-let crop = CGRect(x: cx - side / 2, y: cy - side / 2, width: side, height: side)
-FileHandle.standardError.write("image \(w)x\(h), square \(Int(crop.minX)),\(Int(crop.minY)) size \(side)\n".data(using: .utf8)!)
+// The dark square: its left and right edges from a row near the top (above the art), and its
+// top edge from the first dark rows down the middle. The art may fill the square to the
+// bottom, so the bottom edge is taken from the width (it is a square).
+var top = h
+for y in stride(from: 0, to: h / 2, by: 1) where dark(w / 2, y) { top = y; break }
+let probeY = top + h / 16
+var left = w, right = 0
+for x in 0..<w where dark(x, probeY) { left = min(left, x); right = max(right, x) }
+let side = right - left
+let crop = CGRect(x: left, y: top, width: side, height: side)
+FileHandle.standardError.write("image \(w)x\(h), square \(left),\(top) size \(side)\n".data(using: .utf8)!)
 guard let square = cg.cropping(to: crop) else { fatalError("crop failed") }
 
 let canvas = 1024, body: CGFloat = 824

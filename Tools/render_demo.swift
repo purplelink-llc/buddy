@@ -42,7 +42,29 @@ func render(_ name: String, height: CGFloat, expanded: Bool, _ events: [HookEven
     print("wrote \(name).png")
 }
 
+/// Every mood, large, for checking the character's drawing.
+@MainActor
+func renderCharacterSheet() {
+    let moods: [(Mood, String)] = [(.idle, "idle"), (.working, "working"), (.attention, "needs you"), (.done, "done"), (.paused, "paused")]
+    let sheet = HStack(spacing: 36) {
+        ForEach(moods, id: \.1) { mood, label in
+            VStack(spacing: 14) {
+                Guy(mood: mood, size: 120)
+                Text(label).font(.system(size: 15)).foregroundStyle(.white.opacity(0.7))
+            }
+        }
+    }
+    .padding(40)
+    .background(.black)
+    let renderer = ImageRenderer(content: sheet)
+    renderer.scale = 2
+    let png = NSBitmapImageRep(data: renderer.nsImage!.tiffRepresentation!)!.representation(using: .png, properties: [:])!
+    try! png.write(to: outDir.appendingPathComponent("character.png"))
+    print("wrote character.png")
+}
+
 MainActor.assumeIsolated {
+    renderCharacterSheet()
     let now = Date()
     let earlier = now.addingTimeInterval(-192)
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.1
+
+### Changed
+- Buddy is now a purple pup: a new app icon (a cartoon Lab/Chow mix) and a new notch character with short upright ears. He still glances while Claude works, hops when a session needs you, and smiles with his tongue out when it finishes.
+
 ## 0.2.0 (first public release)
 
 ### Added
