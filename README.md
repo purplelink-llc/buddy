@@ -12,7 +12,7 @@ Buddy is an independent open-source project by Purplelink LLC. It is not made by
 - **Needs you:** when a session asks for permission, asks a question, or has a plan for you to review, Buddy hops, plays a sound, and opens for 20 seconds. After that an orange badge stays until you answer.
 - **Finished:** Buddy smiles, plays a chime, and says how long the turn took ("Finished in 3m 12s"). A green check stays until you hover the notch.
 - **Jump to it:** click a session to open that exact chat in the Claude app, that exact Terminal or iTerm2 tab, or that project's VS Code or Cursor window. Click or swipe a row to clear it.
-- **Usage limits:** when a limit pauses your chats, Buddy counts down to the reset and lists the paused chats (including ones paused before Buddy was running). **Continue now** types "continue" into each of them, and **Auto** does it for you a few minutes after the reset.
+- **Usage limits:** when a limit pauses your chats, Buddy counts down to the reset and lists the paused chats (including ones paused before Buddy was running). **Continue now** types "continue" into each of them, and **Auto** does it for you about a minute after each chat's own limit resets (trying again up to three times if a chat is still paused).
 - **Dropped connections:** when a chat stops because the network dropped or the Mac went to sleep, Buddy retries it on its own once you are back online. It presses the chat's **Try again** button (or types "continue"), at most three times.
 
 ![The usage-limit banner: a countdown, two paused chats, and Auto turned on](design/demo/limit.png)
