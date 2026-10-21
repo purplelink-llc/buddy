@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>Buddy</title>
+    <item>
+      <title>Buddy 0.5.0</title>
+      <pubDate>Wed, 21 Oct 2026 12:53:07 -0400</pubDate>
+      <sparkle:version>8</sparkle:version>
+      <sparkle:shortVersionString>0.5.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <sparkle:releaseNotesLink>https://github.com/purplelink-llc/buddy/releases/tag/v0.5.0</sparkle:releaseNotesLink>
+      <enclosure url="https://github.com/purplelink-llc/buddy/releases/download/v0.5.0/Buddy.zip" sparkle:edSignature="aWrW/EumqeQgXAboNcJjvPz24IfGyF3jVYKV9mKHJ54yqxkYb4RXK6FZXQWQlKi8xhir0X8h5pVnqNyOfUseCA==" length="3052113" type="application/octet-stream"/>
+    </item>
+  </channel>
+</rss>
