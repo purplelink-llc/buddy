@@ -172,11 +172,13 @@ final class Store: ObservableObject {
         visible.sorted { (rank($0), $0.updated) > (rank($1), $1.updated) }
     }
 
-    /// Unseen finished sessions rank above working ones: they are waiting on you.
+    /// List order by color: orange (needs you), green (finished, waiting on your reply),
+    /// blue (working), purple (paused), then idle. Green stays above blue after you have
+    /// looked at it: hovering the notch marks it seen, but it still waits on you.
     private func rank(_ s: Session) -> Int {
         switch s.mood {
         case .attention: return 4
-        case .done: return s.acknowledged ? 1 : 3
+        case .done: return 3
         case .working: return 2
         case .paused: return 1
         case .idle: return 0

@@ -303,6 +303,20 @@ MainActor.assumeIsolated {
     expect(rescanStore.sessions[fresh.id]?.continueAttempts == 1 && scanHanded == 1, "rescan keeps the attempt count")
     defaults.removeObject(forKey: "autoTypeContinue")
 
+    // MARK: list order: orange, then green, then blue, even after hovering marks green as seen
+    let orderClock = Date()
+    let order = Store(defaults: defaults, sound: { _ in }, now: { orderClock }, titles: titles)
+    order.apply([
+        event(#"{"hook_event_name":"UserPromptSubmit","session_id":"green","prompt":"a"}"#, at: orderClock.addingTimeInterval(-300)),
+        event(#"{"hook_event_name":"Stop","session_id":"green"}"#, at: orderClock.addingTimeInterval(-200)),
+        event(#"{"hook_event_name":"UserPromptSubmit","session_id":"blue","prompt":"b"}"#, at: orderClock.addingTimeInterval(-10)),
+        event(#"{"hook_event_name":"UserPromptSubmit","session_id":"orange","prompt":"c"}"#, at: orderClock.addingTimeInterval(-400)),
+        event(#"{"hook_event_name":"PermissionRequest","session_id":"orange","tool_name":"Bash","tool_input":{}}"#, at: orderClock.addingTimeInterval(-390)),
+    ])
+    expect(order.ordered.map(\.id) == ["orange", "green", "blue"], "orange, green, blue, got \(order.ordered.map(\.id))")
+    order.markFinishedSeen()
+    expect(order.ordered.map(\.id) == ["orange", "green", "blue"], "green stays above blue after hovering, got \(order.ordered.map(\.id))")
+
     // MARK: chats stopped by a dropped connection
     for message in ["API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)",
                     "API Error: Connection lost mid-response. The response above may be incomplete.",

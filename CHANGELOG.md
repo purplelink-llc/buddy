@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.2
+
+### Fixed
+- The list always shows chats that need you (orange) first, then finished chats waiting on your reply (green), then working ones (blue). Hovering the notch used to drop finished chats below working ones.
+
 ## 0.3.1
 
 ### Fixed
