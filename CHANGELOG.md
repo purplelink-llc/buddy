@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.0
+
+### Added
+- A countdown just right of the notch to your next reset ("2h 19m", then "14:25" in the last hour). It counts to the session window's reset, or, in purple, to the usage limit that has chats paused. The status badge (needs you, finished, working) stays at the far right.
+
+### Changed
+- While a limit has chats paused, the right-hand badge shows an hourglass, since the countdown now sits beside the notch.
+
 ## 0.6.0
 
 ### Added

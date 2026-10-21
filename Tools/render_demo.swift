@@ -106,6 +106,10 @@ MainActor.assumeIsolated {
         event(#"{"hook_event_name":"UserPromptSubmit","session_id":"w1","cwd":"/Users/me/Code/acme","prompt":"go"}"#),
         event(#"{"hook_event_name":"UserPromptSubmit","session_id":"w2","cwd":"/Users/me/Code/widgets","prompt":"go"}"#),
     ], usage: usage)
+    // The widest case: the longest session countdown next to the widest badge.
+    render("collapsed-usage-wide", height: 70, expanded: false, (1...12).map { i in
+        event(#"{"hook_event_name":"UserPromptSubmit","session_id":"y\#(i)","cwd":"/Users/me/Code/acme","prompt":"go"}"#)
+    }, usage: UsageReading(session: .init(percent: 88, resetsAt: now.addingTimeInterval(4 * 3600 + 59 * 60 + 50)), week: nil, exact: true))
     render("collapsed-usage-limit", height: 70, expanded: false, limitEvents,
            usage: UsageReading(session: .init(percent: 100, resetsAt: reset), week: nil, exact: true))
 }

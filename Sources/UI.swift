@@ -107,7 +107,15 @@ final class UIState: ObservableObject {
 
     /// Usage sits beside the Guy, so the ears grow to fit it (both sides, to stay centred).
     var showsUsage: Bool { store.usage?.session != nil }
-    var earWidth: CGFloat { showsUsage ? 84 : 46 }
+    /// What the countdown right of the notch counts to: a usage limit that has chats paused
+    /// (`limit`), or else the session window's reset.
+    var resetCountdown: (date: Date, limit: Bool)? {
+        let now = Date()
+        if !store.pausedSessions.isEmpty, let reset = store.limitResetsAt, reset > now { return (reset, true) }
+        if let reset = store.usage?.session?.resetsAt, reset > now { return (reset, false) }
+        return nil
+    }
+    var earWidth: CGFloat { showsUsage || resetCountdown != nil ? 84 : 46 }
     var collapsedWidth: CGFloat { geometry.notchWidth > 0 ? geometry.notchWidth + 2 * earWidth : 120 + 2 * (earWidth - 46) }
 
     var size: CGSize {

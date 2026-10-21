@@ -192,13 +192,26 @@ struct PillView: View {
     }
 
     private var header: some View {
-        HStack {
-            Guy(mood: store.overallMood, size: ui.geometry.barHeight * 0.66, urgent: store.peek != nil)
-                .padding(.leading, 12)
-            if ui.showsUsage, let s = store.usage?.session { usageBadge(s, approx: store.usage?.exact == false) }
-            Spacer()
-            // The space beside the notch is 46 pt; the badge never reaches under the camera.
-            badge.frame(maxWidth: 33, alignment: .trailing).padding(.trailing, 7)
+        // Each ear is the space beside the notch (46 or 84 pt); nothing reaches under the camera.
+        HStack(spacing: 0) {
+            HStack(spacing: 0) {
+                Guy(mood: store.overallMood, size: ui.geometry.barHeight * 0.66, urgent: store.peek != nil)
+                    .padding(.leading, 12)
+                if ui.showsUsage, let s = store.usage?.session { usageBadge(s, approx: store.usage?.exact == false) }
+                Spacer(minLength: 0)
+            }
+            .frame(width: ui.earWidth)
+            Spacer(minLength: 0)
+            // Both at their own width, so the badge never squeezes the countdown into "1h 5…".
+            HStack(spacing: 2) {
+                if let reset = ui.resetCountdown {
+                    resetTimer(reset.date, limit: reset.limit).fixedSize().layoutPriority(1).padding(.leading, 7)
+                }
+                Spacer(minLength: 0)
+                badge.fixedSize()
+            }
+            .padding(.trailing, 7)
+            .frame(width: ui.earWidth)
         }
         .contentShape(Rectangle())
         .onTapGesture { store.openTop() }
@@ -213,7 +226,12 @@ struct PillView: View {
                 .frame(minWidth: 16, minHeight: 16)
                 .background(Circle().fill(.orange))
         } else if !store.pausedSessions.isEmpty {
-            countdown
+            // The countdown itself sits beside the notch when there is room for it there.
+            if ui.resetCountdown?.limit == true {
+                Image(systemName: "hourglass").font(.system(size: 11, weight: .bold)).foregroundStyle(.purple)
+            } else {
+                countdown
+            }
         } else if !store.disconnectedSessions.isEmpty {
             Image(systemName: "wifi.slash").font(.system(size: 11, weight: .bold)).foregroundStyle(.purple)
                 .help("Chats stopped by a dropped connection; Buddy retries them when you're back online")
@@ -253,6 +271,18 @@ struct PillView: View {
         .frame(maxWidth: ui.earWidth - 12 - ui.geometry.barHeight * 0.66 - 12, alignment: .leading)
         .padding(.leading, 5)
         .help(store.usage?.exact == true ? "Session usage (exact) and when it resets" : "Estimated session usage and when it resets")
+    }
+
+    /// Counts down beside the notch: purple to a limit that has chats paused, else to the
+    /// session window's reset. Ticks by itself ("2h 14m", then "14:25").
+    private func resetTimer(_ reset: Date, limit: Bool) -> some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            Text(Store.shortCountdown(max(0, reset.timeIntervalSince(context.date))))
+        }
+        .font(.system(size: 12.5, weight: .semibold).monospacedDigit())
+        .foregroundStyle(limit ? Color.purple : Color.white.opacity(0.85))
+        .lineLimit(1)
+        .help(limit ? "Time until the usage limit resets" : "Time until your session window resets")
     }
 
     static func usageTint(_ percent: Double) -> Color {

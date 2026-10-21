@@ -12,14 +12,14 @@ Buddy is an independent open-source project by Purplelink LLC. It is not made by
 - **Needs you:** when a session asks for permission, asks a question, or has a plan for you to review, Buddy hops, plays a sound, and opens for 20 seconds. After that an orange badge stays until you answer.
 - **Finished:** Buddy smiles, plays a chime, and says how long the turn took ("Finished in 3m 12s"). A green check stays until you hover the notch.
 - **Jump to it:** click a session to open that exact chat in the Claude app, that exact Terminal or iTerm2 tab, or that project's VS Code or Cursor window. Click or swipe a row to clear it.
-- **Usage:** beside the character, Buddy always shows how much of your 5-hour session window you have used and when it resets (estimated from your chats on this Mac, or exact from Anthropic if you opt in). The top of the list adds a meter, plus your weekly usage when exact.
+- **Usage:** beside the character, Buddy always shows how much of your 5-hour session window you have used and when it resets; just right of the notch, a countdown shows how long until it resets (estimated from your chats on this Mac, or exact from Anthropic if you opt in). The top of the list adds a meter, plus your weekly usage when exact.
 - **Updates:** Buddy checks for a new version once a day and installs it for you (signed and notarized, through Sparkle). Turn it off in Settings.
 - **Usage limits:** when a limit pauses your chats, Buddy counts down to the reset and lists the paused chats (including ones paused before Buddy was running). **Continue now** types "continue" into each of them, and **Auto** does it for you about a minute after each chat's own limit resets (trying again up to three times if a chat is still paused).
 - **Dropped connections:** when a chat stops because the network dropped or the Mac went to sleep, Buddy retries it on its own once you are back online. It presses the chat's **Try again** button (or types "continue"), at most three times.
 
 ![The usage-limit banner: a countdown, two paused chats, and Auto turned on](design/demo/limit.png)
 
-![Buddy beside the notch: session usage and reset time on the left, two working chats on the right](design/demo/collapsed-usage.png)
+![Buddy beside the notch: session usage and reset time on the left, the countdown to the reset and two working chats on the right](design/demo/collapsed-usage.png)
 
 Buddy has no Dock icon and no account. Until it knows your usage, it hides completely when nothing is happening.
 
