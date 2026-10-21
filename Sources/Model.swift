@@ -2,13 +2,37 @@ import AppKit
 import Foundation
 import os
 
-/// Buddy's log. Read it with:
-///   /usr/bin/log show --last 1h --predicate 'subsystem == "llc.purplelink.Buddy"'
+/// Buddy's log: the system log (subsystem llc.purplelink.Buddy) and a small file,
+/// ~/Library/Logs/Buddy/buddy.log, for Macs where the system log cannot be read.
+/// The file is cut over to buddy.1.log at 512 KB.
 enum Log {
     private static let logger = Logger(subsystem: "llc.purplelink.Buddy", category: "Buddy")
+    private static let queue = DispatchQueue(label: "llc.purplelink.Buddy.log", qos: .utility)
+    static let fileURL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Logs/Buddy/buddy.log")
 
     static func note(_ message: String) {
         logger.notice("\(message, privacy: .public)")
+        let stamp = ISO8601DateFormatter.string(from: Date(), timeZone: .current, formatOptions: [.withInternetDateTime])
+        let line = "\(stamp) \(message)\n"
+        queue.async { append(line) }
+    }
+
+    private static func append(_ line: String) {
+        let fm = FileManager.default
+        try? fm.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if let size = (try? fm.attributesOfItem(atPath: fileURL.path))?[.size] as? Int, size > 512 * 1024 {
+            let old = fileURL.deletingLastPathComponent().appendingPathComponent("buddy.1.log")
+            try? fm.removeItem(at: old)
+            try? fm.moveItem(at: fileURL, to: old)
+        }
+        if let handle = FileHandle(forWritingAtPath: fileURL.path) {
+            handle.seekToEndOfFile()
+            handle.write(Data(line.utf8))
+            try? handle.close()
+        } else {
+            try? Data(line.utf8).write(to: fileURL)
+        }
     }
 }
 
@@ -57,6 +81,9 @@ struct Session: Identifiable {
     var pauseReason = PauseReason.limit
     /// Automatic retries since the connection dropped (capped, so Buddy never loops).
     var retries = 0
+    /// Times Auto typed "continue" into this chat for its current limit, and when it last did.
+    var continueAttempts = 0
+    var lastContinueAttempt: Date?
 
     var name: String { title.isEmpty ? project : title }
 }
@@ -169,7 +196,12 @@ final class Store: ObservableObject {
     }
 
     /// The reset Buddy is counting down to (one account, so one limit for every chat).
-    var limitResetsAt: Date? { pausedSessions.compactMap(\.limitResetsAt).max() }
+    /// The countdown target: the next reset still to come, or the latest one once all have passed.
+    /// Chats paused together can reset at different times, and each is continued at its own.
+    var limitResetsAt: Date? {
+        let resets = pausedSessions.compactMap(\.limitResetsAt)
+        return resets.filter { $0 > now() }.min() ?? resets.max()
+    }
 
     /// Worth showing the collapsed pill for.
     var hasNews: Bool {
@@ -238,6 +270,17 @@ final class Store: ObservableObject {
             s.limitResetsAt = ResetTime.parse(message, after: e.date)
             s.activity = "Paused by your usage limit"
             s.turnStarted = nil
+            // A new limit starts a new count, unless Buddy typed into this chat moments ago
+            // (the limit had not really lifted yet): then the tries keep counting, so Auto
+            // can never loop.
+            let typedMomentsAgo = s.lastContinueAttempt.map { e.date.timeIntervalSince($0) < 15 * 60 } ?? false
+            if !typedMomentsAgo {
+                s.continueAttempts = 0
+                s.lastContinueAttempt = nil
+            }
+            if live {
+                Log.note("limit paused \(s.name), resets \(s.limitResetsAt.map { $0.formatted(date: .omitted, time: .shortened) } ?? "at an unknown time")")
+            }
         case "StopFailure" where Self.isConnectionError(e.json["error"] as? String,
                                                         e.json["last_assistant_message"] as? String ?? ""):
             // "Can't reach the API server", "Connection lost mid-response", "went to sleep"
@@ -405,33 +448,71 @@ final class Store: ObservableObject {
 
     // MARK: - Usage limits
 
-    /// Claude Code's own auto-continue fires 1-5 minutes after the reset; Buddy's backup
-    /// waits longer so it only ever handles chats that did not resume by themselves.
-    static let backupDelay: TimeInterval = 6 * 60
+    /// How long after a chat's own reset Auto types "continue". Claude Code's built-in
+    /// auto-continue never resumed a Claude app chat in the transcripts checked on
+    /// 2026-10-20, so those get one grace minute. Terminal sessions, where the built-in can
+    /// act (1 to 5 minutes after the reset), get six.
+    nonisolated static func continueDelay(for host: Host) -> TimeInterval {
+        host.bundleID == Jump.claudeApp ? 60 : 6 * 60
+    }
+    /// Try again if a chat is still paused this long after Auto typed into it.
+    static let continueRetryGap: TimeInterval = 3 * 60
+    static let maxContinueAttempts = 3
+    /// Auto leaves alone chats whose limit reset longer ago than this (likely abandoned).
+    static let autoContinueWindow: TimeInterval = 12 * 3600
 
-    /// When Buddy's backup will type "continue", if it is on.
-    var autoContinueAt: Date? {
-        guard autoContinueOn, let reset = limitResetsAt else { return nil }
-        return reset.addingTimeInterval(Self.backupDelay)
+    /// When Auto should next act on this chat, or nil when it should not.
+    private func autoDue(_ s: Session) -> Date? {
+        guard let reset = s.limitResetsAt, s.continueAttempts < Self.maxContinueAttempts else { return nil }
+        let first = reset.addingTimeInterval(Self.continueDelay(for: s.host))
+        guard now().timeIntervalSince(first) < Self.autoContinueWindow else { return nil }
+        guard let last = s.lastContinueAttempt else { return first }
+        return max(first, last.addingTimeInterval(Self.continueRetryGap))
     }
 
-    var limitHasReset: Bool { limitResetsAt.map { $0 <= now() } ?? !pausedSessions.isEmpty }
+    /// When Auto will next type "continue", if it is on.
+    var autoContinueAt: Date? {
+        guard autoContinueOn else { return nil }
+        return pausedSessions.compactMap(autoDue).min()
+    }
 
-    /// Refreshes the view when the limit resets, then runs the backup if it is on.
+    /// Some paused chat's limit has reset (Continue now can act on it).
+    var limitHasReset: Bool { pausedSessions.contains { ($0.limitResetsAt ?? .distantPast) <= now() } }
+
+    /// Wakes at the next reset (to refresh the banner) or the next Auto action, whichever
+    /// comes first, acts, and schedules itself again.
     private func scheduleLimitTimers() {
         limitTask?.cancel()
-        guard let reset = limitResetsAt else { return }
+        let now = now()
+        var wakes = pausedSessions.compactMap(\.limitResetsAt).filter { $0 > now }
+        if let due = autoContinueAt { wakes.append(due) }
+        guard let next = wakes.min() else { return }
         limitTask = Task { [weak self] in
-            let untilReset = reset.timeIntervalSinceNow
-            if untilReset > 0 { try? await Task.sleep(for: .seconds(untilReset)) }
+            let wait = next.timeIntervalSinceNow
+            if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
             guard !Task.isCancelled, let self else { return }
             self.objectWillChange.send()
-            guard let fireAt = self.autoContinueAt else { return }
-            let untilFire = fireAt.timeIntervalSinceNow
-            if untilFire > 0 { try? await Task.sleep(for: .seconds(untilFire)) }
-            guard !Task.isCancelled else { return }
-            self.continuePaused(manual: false)
+            self.runAutoContinue()
+            self.scheduleLimitTimers()
         }
+    }
+
+    /// Hands Auto the paused chats that are due (their own reset has passed, or a retry is
+    /// due) and counts the attempt. Called by the timer; tests call it directly.
+    func runAutoContinue() {
+        guard autoContinueOn else { return }
+        let now = now()
+        var due: [Session] = []
+        for var s in pausedSessions {
+            guard let at = autoDue(s), at <= now else { continue }
+            s.continueAttempts += 1
+            s.lastContinueAttempt = now
+            sessions[s.id] = s
+            due.append(s)
+        }
+        guard !due.isEmpty else { return }
+        Log.note("auto-continue due: " + due.map { "\($0.name) (try \($0.continueAttempts))" }.joined(separator: ", "))
+        onContinue?(due, false)
     }
 
     /// Merges a transcript scan: adds chats paused before Buddy was listening, and drops
@@ -444,7 +525,16 @@ final class Store: ObservableObject {
         }
         for f in found where sessions[f.id] == nil || sessions[f.id]?.fromScan == true {
             var adopted = f
-            adopted.hidden = sessions[f.id]?.hidden ?? false
+            if let old = sessions[f.id] {
+                adopted.hidden = old.hidden
+                // A rescan of the same pause keeps Auto's count, so retries stay capped.
+                if old.limitResetsAt == f.limitResetsAt {
+                    adopted.continueAttempts = old.continueAttempts
+                    adopted.lastContinueAttempt = old.lastContinueAttempt
+                }
+            } else if f.mood == .paused, f.pauseReason == .limit {
+                Log.note("found paused chat \(f.name), resets \(f.limitResetsAt.map { $0.formatted(date: .abbreviated, time: .shortened) } ?? "at an unknown time")")
+            }
             sessions[f.id] = adopted
         }
         expire()

@@ -41,6 +41,8 @@ Buddy asks for more than most small apps, so here is all of it.
 - **Accessibility (optional).** Buddy uses it only to type "continue" into paused Claude app chats, or to press **Try again** in a chat a dropped connection stopped. It waits until the screen is unlocked (and, for **Auto**, until you stop typing), then puts you back in the app you were using.
 - **Automation (optional).** macOS asks once before Buddy brings a Terminal or iTerm2 tab forward or sends "continue" to it.
 
+Buddy keeps a small log of what it does (chat titles included) in `~/Library/Logs/Buddy/buddy.log`, capped at about 1 MB.
+
 Buddy makes no network connections. Everything stays on your Mac.
 
 ## Known limits

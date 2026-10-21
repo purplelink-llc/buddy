@@ -250,6 +250,59 @@ MainActor.assumeIsolated {
     try! setup.disconnect()
     expect(!setup.isConnected && !FileManager.default.fileExists(atPath: setup.hookURL.path), "disconnect removes entries and the hook")
 
+    // MARK: Auto continues each chat at its own reset (2026-10-20: chats paused together reset
+    // at 8:50 and 9:40 PM, and the old single countdown waited for the later one)
+    var autoClock = at("2026-10-20 20:40", "America/New_York")
+    var autoHanded: [[String]] = []
+    let auto = Store(defaults: defaults, sound: { _ in }, now: { autoClock }, titles: titles)
+    auto.onContinue = { sessions, manual in if !manual { autoHanded.append(sessions.map(\.id).sorted()) } }
+    defaults.set(true, forKey: "autoTypeContinue")
+    let appHost2 = "com.anthropic.claudefordesktop\tlocal_aaa-1\t"
+    func pauseEvent(_ id: String, _ reset: String, host: String) -> [HookEvent] {
+        [event(#"{"hook_event_name":"UserPromptSubmit","session_id":"\#(id)","prompt":"work"}"#, host: host, at: autoClock),
+         event(#"{"hook_event_name":"StopFailure","session_id":"\#(id)","error":"rate_limit","last_assistant_message":"You've hit your session limit · resets \#(reset) (America/New_York)"}"#, host: host, at: autoClock)]
+    }
+    auto.apply(pauseEvent("early", "8:50pm", host: appHost2) + pauseEvent("late", "9:40pm", host: appHost2)
+               + pauseEvent("term", "8:50pm", host: "com.apple.Terminal\t\tttys004"))
+    expect(auto.limitResetsAt == at("2026-10-20 20:50", "America/New_York"), "countdown shows the next reset, not the last")
+    expect(auto.autoContinueAt == at("2026-10-20 20:51", "America/New_York"), "a Claude app chat is due one minute after its own reset")
+    autoClock = at("2026-10-20 20:51", "America/New_York")
+    auto.runAutoContinue()
+    expect(autoHanded == [["early"]], "8:51: only the chat whose limit reset is continued, got \(autoHanded)")
+    expect(auto.limitHasReset && auto.limitResetsAt == at("2026-10-20 21:40", "America/New_York"), "banner: one ready, counting to the next")
+    autoClock = at("2026-10-20 20:56", "America/New_York")
+    auto.runAutoContinue()
+    expect(autoHanded.last == ["early", "term"], "8:56: the terminal session (six-minute wait) and a retry of the still-paused chat, got \(autoHanded)")
+    autoClock = at("2026-10-20 21:41", "America/New_York")
+    auto.runAutoContinue()
+    expect(autoHanded.last?.contains("late") == true, "9:41: the later chat at its own reset, got \(String(describing: autoHanded.last))")
+    for minute in stride(from: 45, through: 59, by: 3) {
+        autoClock = at("2026-10-20 21:\(minute)", "America/New_York")
+        auto.runAutoContinue()
+    }
+    let earlyTries = autoHanded.filter { $0.contains("early") }.count
+    expect(earlyTries == 3 && auto.sessions["early"]?.continueAttempts == 3, "at most three tries per chat, got \(earlyTries)")
+
+    // A pause from yesterday is left alone; a rescan of the same pause keeps the count.
+    let rescanStore = Store(defaults: defaults, sound: { _ in }, now: { autoClock }, titles: titles)
+    var stale = auto.sessions["early"]!
+    stale.fromScan = true
+    stale.limitResetsAt = at("2026-10-19 08:00", "America/New_York")
+    stale.continueAttempts = 0
+    stale.lastContinueAttempt = nil
+    rescanStore.adoptScan([stale])
+    expect(rescanStore.autoContinueAt == nil, "Auto ignores a chat whose limit reset over 12 hours ago")
+    var fresh = stale
+    fresh.limitResetsAt = at("2026-10-20 21:58", "America/New_York")
+    rescanStore.adoptScan([fresh])
+    autoClock = at("2026-10-20 21:59", "America/New_York")
+    var scanHanded = 0
+    rescanStore.onContinue = { _, manual in if !manual { scanHanded += 1 } }
+    rescanStore.runAutoContinue()
+    rescanStore.adoptScan([fresh])  // the 10-minute rescan finds the same pause
+    expect(rescanStore.sessions[fresh.id]?.continueAttempts == 1 && scanHanded == 1, "rescan keeps the attempt count")
+    defaults.removeObject(forKey: "autoTypeContinue")
+
     // MARK: chats stopped by a dropped connection
     for message in ["API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)",
                     "API Error: Connection lost mid-response. The response above may be incomplete.",

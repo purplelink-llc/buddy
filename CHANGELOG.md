@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.1
+
+### Fixed
+- Auto now continues each paused chat one minute after its own limit resets. Chats paused together can reset at different times, and Auto used to wait for the latest reset (and six more minutes) before continuing any of them.
+- Auto tries again if a chat is still paused three minutes later (at most three tries), and leaves alone chats whose limit reset more than 12 hours ago.
+- The countdown shows the next reset.
+
+### Added
+- Buddy keeps a small log at `~/Library/Logs/Buddy/buddy.log`.
+
 ## 0.3.0
 
 ### Added
