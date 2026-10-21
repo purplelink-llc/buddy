@@ -57,6 +57,8 @@ final class UIState: ObservableObject {
     // MARK: Connecting to Claude Code
 
     let setup = HookSetup()
+    /// Opens the Settings window (set by the app delegate).
+    var openSettings: (() -> Void)?
     @Published private(set) var connected = true
     @Published private(set) var setupError: String?
     /// "Not now" on the first-run banner.

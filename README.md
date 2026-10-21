@@ -27,7 +27,7 @@ You need a Mac with Apple silicon, macOS 14 or later, and Claude Code (the `clau
 2. Open Buddy. It appears in the notch with a **Connect Buddy to Claude Code** banner.
 3. Click **Connect**. Buddy adds its hook to `~/.claude/settings.json` (a backup is kept next to it) and copies a small program to `~/.claude/hooks/buddy-hook`.
 
-Sessions that start after you connect appear in Buddy. Right-click Buddy for sounds, open at login, and disconnecting.
+Sessions that start after you connect appear in Buddy. Right-click Buddy and choose **Settings…** for sounds, open at login, Auto, connection retries, and checking for updates.
 
 To use **Continue now** and **Auto** with the Claude app, allow Buddy in System Settings > Privacy & Security > Accessibility. Buddy asks the first time you use them.
 
@@ -67,7 +67,7 @@ When one of these breaks, Buddy falls back to the folder name, to bringing the a
 
 ## Uninstall
 
-Right-click Buddy and choose **Disconnect from Claude Code**. Then quit Buddy and delete `/Applications/Buddy.app`. Disconnecting removes Buddy's hook entries and `~/.claude/hooks/buddy-hook`, and it leaves your other hooks alone.
+Right-click Buddy, choose **Settings…**, and click **Disconnect** next to Hook. Then quit Buddy and delete `/Applications/Buddy.app`. Disconnecting removes Buddy's hook entries and `~/.claude/hooks/buddy-hook`, and it leaves your other hooks alone.
 
 ## License
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0
+
+### Added
+- A small Settings window: right-click Buddy, then **Settings…**. It has open at login, separate sounds for chats that need you and chats that finish, Auto, connection retries (now switchable), the Claude Code connection, whether Accessibility is allowed, the version, **Check for Updates…** (opens the releases page in your browser; Buddy itself still makes no network connections) and **Show Log**.
+
+### Changed
+- The right-click menu is now Settings…, Clear Finished Sessions and Quit Buddy. If you had turned Sounds off, both sounds start off.
+
 ## 0.3.2
 
 ### Fixed

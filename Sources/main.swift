@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let pathMonitor = NWPathMonitor()
     var online = true
     var retryTask: Task<Void, Never>?
+    var settingsWindow: NSWindow?
     var ui: UIState!
     lazy var inbox = Inbox { [weak self] events in
         MainActor.assumeIsolated { self?.store.apply(events) }
@@ -36,6 +37,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         ui = UIState(store: store, geometry: geometry)
         ui.refreshConnection()
+        ui.openSettings = { [weak self] in self?.showSettings() }
+        // `open -a Buddy --args --settings` opens Settings at launch.
+        if CommandLine.arguments.contains("--settings") { showSettings() }
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
         Log.note("started \(version), Accessibility \(Continuer.canType ? "on" : "off")")
 
@@ -119,6 +123,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             UserDefaults.standard.set(true, forKey: "loginItemOffered")
             LoginItem.enabled = true
         }
+    }
+
+    /// The Settings window: made once, then brought forward. Buddy has no Dock icon, so it
+    /// activates itself to put the window in front.
+    func showSettings() {
+        if settingsWindow == nil {
+            let window = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(store: store, ui: ui)))
+            window.title = "Buddy Settings"
+            window.styleMask = [.titled, .closable]
+            window.isReleasedWhenClosed = false
+            window.center()
+            settingsWindow = window
+        }
+        NSApp.activate()
+        settingsWindow?.makeKeyAndOrderFront(nil)
     }
 
     private func networkChanged(_ up: Bool) {

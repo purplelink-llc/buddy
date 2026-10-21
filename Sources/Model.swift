@@ -151,11 +151,31 @@ final class Store: ObservableObject {
         self.sound = sound
         self.now = now
         self.titles = titles
+        migrateSoundSetting()
     }
 
-    var soundsOn: Bool {
-        get { !defaults.bool(forKey: "muted") }
-        set { defaults.set(!newValue, forKey: "muted"); objectWillChange.send() }
+    /// Sound when a chat needs you ("Ping") and when one finishes ("Glass"), set separately.
+    var soundForAttention: Bool {
+        get { !defaults.bool(forKey: "muteAttention") }
+        set { defaults.set(!newValue, forKey: "muteAttention"); objectWillChange.send() }
+    }
+    var soundForDone: Bool {
+        get { !defaults.bool(forKey: "muteDone") }
+        set { defaults.set(!newValue, forKey: "muteDone"); objectWillChange.send() }
+    }
+
+    /// Buddy retries chats a dropped connection stopped, once you are back online.
+    var retryConnectionsOn: Bool {
+        get { !defaults.bool(forKey: "noConnectionRetry") }
+        set { defaults.set(!newValue, forKey: "noConnectionRetry"); objectWillChange.send() }
+    }
+
+    /// Before 0.4 one "muted" switch silenced both sounds; carry it over once.
+    private func migrateSoundSetting() {
+        guard defaults.bool(forKey: "muted") else { return }
+        defaults.set(true, forKey: "muteAttention")
+        defaults.set(true, forKey: "muteDone")
+        defaults.removeObject(forKey: "muted")
     }
 
     /// Buddy's backup for Claude Code's own auto-continue: type "continue" into chats
@@ -318,8 +338,14 @@ final class Store: ObservableObject {
         if peek == s.id, s.mood != before { endPeek() }
         if s.mood == .paused || before == .paused { scheduleLimitTimers() }
         guard live, s.mood != before else { return }
-        if s.mood == .attention { play("Ping"); startPeek(s.id, for: Self.attentionPeek) }
-        if s.mood == .done { play("Glass"); startPeek(s.id, for: Self.donePeek) }
+        if s.mood == .attention {
+            if soundForAttention { sound("Ping") }
+            startPeek(s.id, for: Self.attentionPeek)
+        }
+        if s.mood == .done {
+            if soundForDone { sound("Glass") }
+            startPeek(s.id, for: Self.donePeek)
+        }
     }
 
     /// The app names a chat after its first turn and may rename it, so look again at turn
@@ -352,9 +378,6 @@ final class Store: ObservableObject {
         peek = nil
     }
 
-    private func play(_ name: String) {
-        if soundsOn { sound(name) }
-    }
 
     private func remove(_ id: String) {
         sessions[id] = nil
@@ -559,6 +582,7 @@ final class Store: ObservableObject {
     /// came back, or the Mac woke) restarts the attempt count; otherwise each chat gets at
     /// most `maxRetries` tries.
     func retryDisconnected(fresh: Bool) {
+        guard retryConnectionsOn else { return }
         var due: [Session] = []
         for var s in disconnectedSessions {
             if fresh { s.retries = 0 }

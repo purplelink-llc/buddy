@@ -317,6 +317,26 @@ MainActor.assumeIsolated {
     order.markFinishedSeen()
     expect(order.ordered.map(\.id) == ["orange", "green", "blue"], "green stays above blue after hovering, got \(order.ordered.map(\.id))")
 
+    // MARK: settings: two sounds, the old single switch carried over, retries switchable
+    let soundDefaults = UserDefaults(suiteName: "buddy-tests-sound-\(UUID().uuidString)")!
+    soundDefaults.set(true, forKey: "muted")  // a pre-0.4 "Sounds off"
+    var heard: [String] = []
+    let soundClock = Date()
+    let sounds = Store(defaults: soundDefaults, sound: { heard.append($0) }, now: { soundClock }, titles: titles)
+    expect(!sounds.soundForAttention && !sounds.soundForDone && soundDefaults.object(forKey: "muted") == nil,
+           "the old Sounds off becomes both sounds off, once")
+    sounds.soundForAttention = true
+    sounds.apply([event(#"{"hook_event_name":"UserPromptSubmit","session_id":"S1","prompt":"x"}"#, at: soundClock),
+                  event(#"{"hook_event_name":"PermissionRequest","session_id":"S1","tool_name":"Bash","tool_input":{}}"#, at: soundClock),
+                  event(#"{"hook_event_name":"Stop","session_id":"S1"}"#, at: soundClock)])
+    expect(heard == ["Ping"], "only the needs-you sound plays, got \(heard)")
+    sounds.retryConnectionsOn = false
+    var retriedWhileOff = 0
+    sounds.onRetry = { _ in retriedWhileOff += 1 }
+    sounds.apply([event(#"{"hook_event_name":"StopFailure","session_id":"S2","error":"server_error","last_assistant_message":"API Error: Connection lost mid-response."}"#, at: soundClock)])
+    sounds.retryDisconnected(fresh: true)
+    expect(retriedWhileOff == 0, "no automatic retries when the setting is off")
+
     // MARK: chats stopped by a dropped connection
     for message in ["API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)",
                     "API Error: Connection lost mid-response. The response above may be incomplete.",

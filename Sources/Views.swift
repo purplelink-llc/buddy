@@ -425,14 +425,8 @@ struct PillView: View {
     }
 
     @ViewBuilder private var menu: some View {
-        Toggle("Sounds", isOn: Binding(get: { store.soundsOn }, set: { store.soundsOn = $0 }))
-        Toggle("Open at Login", isOn: Binding(get: { LoginItem.enabled }, set: { LoginItem.enabled = $0 }))
+        Button("Settings…") { ui.openSettings?() }
         Button("Clear Finished Sessions") { store.clearFinished() }
-        if ui.connected {
-            Button("Disconnect from Claude Code") { ui.disconnect() }
-        } else {
-            Button("Connect to Claude Code") { ui.connect() }
-        }
         Divider()
         Button("Quit Buddy") { NSApp.terminate(nil) }
     }
