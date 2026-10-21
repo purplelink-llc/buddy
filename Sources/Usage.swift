@@ -172,10 +172,11 @@ enum ExactUsage {
     static let keychainService = "Claude Code-credentials"
 
     enum Failure: Error, Equatable {
-        case noSignIn, expired, refused(Int), unreadable, offline
+        case noSignIn, keychainDenied, expired, refused(Int), unreadable, offline
         var message: String {
             switch self {
             case .noSignIn: return "No Claude Code sign-in found. Run claude in Terminal and sign in."
+            case .keychainDenied: return "macOS didn't let Buddy read Claude Code's sign-in. Turn exact usage off and on, then choose Always Allow."
             case .expired: return "Claude Code's sign-in has expired. Run claude in Terminal once to refresh it."
             case .refused(let code): return "Anthropic refused the request (\(code)). Run claude in Terminal once to refresh the sign-in."
             case .unreadable: return "Anthropic's answer was not in the expected shape."
@@ -185,7 +186,7 @@ enum ExactUsage {
         var signInHelps: Bool {
             switch self {
             case .noSignIn, .expired, .refused: return true
-            case .unreadable, .offline: return false
+            case .keychainDenied, .unreadable, .offline: return false
             }
         }
     }
@@ -193,8 +194,11 @@ enum ExactUsage {
     /// Opens Terminal running `claude auth login`, which opens the sign-in page in your default
     /// browser and saves the sign-in to the keychain, where Buddy then finds it. Buddy never
     /// sees your password; it only reads the token Claude Code saved.
+    /// With `switching`, signs the current account out first, so the browser asks which
+    /// account to use instead of reusing the one already signed in.
     @MainActor
-    static func openSignIn() {
+    static func openSignIn(switching: Bool = false) {
+        let logout = switching ? "claude auth logout && echo && " : ""
         let script = """
         #!/bin/zsh -l
         # Opened by Buddy: signs Claude Code in so Buddy can show exact usage.
@@ -202,7 +206,7 @@ enum ExactUsage {
         if command -v claude >/dev/null 2>&1; then
           echo "Signing Claude Code in. Your browser opens to finish; come back here when it says you're done."
           echo
-          claude auth login && echo && echo "Signed in. Buddy picks it up within a few seconds; you can close this window."
+          \(logout)claude auth login && echo && echo "Signed in. Buddy picks it up within a few seconds; you can close this window."
         else
           echo "Claude Code isn't installed here (no claude command on your PATH)."
           echo "Install it from https://claude.com/claude-code, then try Sign In again from Buddy's Settings."
@@ -221,7 +225,11 @@ enum ExactUsage {
     }
 
     static func fetch() async -> Result<UsageReading, Failure> {
-        guard let token = signInToken() else { return .failure(.noSignIn) }
+        let token: (value: String, expired: Bool)
+        switch signInToken() {
+        case .success(let t): token = t
+        case .failure(let f): return .failure(f)
+        }
         guard !token.expired else { return .failure(.expired) }
         var request = URLRequest(url: endpoint, timeoutInterval: 15)
         request.setValue("Bearer \(token.value)", forHTTPHeaderField: "Authorization")
@@ -246,17 +254,76 @@ enum ExactUsage {
         return UsageReading(session: session, week: week, exact: true)
     }
 
-    private static func signInToken() -> (value: String, expired: Bool)? {
+    /// Item not found (or no Claude sign-in in it) is `.noSignIn`; a refused or dismissed
+    /// keychain prompt is `.keychainDenied`, which signing in again would not fix.
+    private static func signInToken() -> Result<(value: String, expired: Bool), Failure> {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                     kSecAttrService as String: keychainService,
                                     kSecReturnData as String: true,
                                     kSecMatchLimit as String: kSecMatchLimitOne]
         var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess, let data = item as? Data,
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        guard status != errSecItemNotFound else { return .failure(.noSignIn) }
+        guard status == errSecSuccess else {
+            Log.note("keychain read of Claude Code's sign-in failed: \(status)")
+            return .failure(.keychainDenied)
+        }
+        guard let data = item as? Data,
               let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let oauth = json["claudeAiOauth"] as? [String: Any],
-              let value = oauth["accessToken"] as? String, !value.isEmpty else { return nil }
+              let value = oauth["accessToken"] as? String, !value.isEmpty else { return .failure(.noSignIn) }
         let expiresMs = (oauth["expiresAt"] as? NSNumber)?.doubleValue ?? .infinity
-        return (value, Date().timeIntervalSince1970 * 1000 >= expiresMs)
+        return .success((value, Date().timeIntervalSince1970 * 1000 >= expiresMs))
+    }
+}
+
+/// The account Claude Code is signed in with, from `claude auth status`. Shown in Settings so
+/// a wrong account is easy to spot; Buddy keeps no account of its own.
+struct ClaudeAccount: Equatable {
+    var email: String
+    var orgName: String?
+
+    /// `{"loggedIn": true, "email": "...", "orgName": "...", ...}`; nil when signed out.
+    static func parse(_ data: Data) -> ClaudeAccount? {
+        guard let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              json["loggedIn"] as? Bool == true, let email = json["email"] as? String, !email.isEmpty else { return nil }
+        let org = (json["orgName"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        return ClaudeAccount(email: email, orgName: org)
+    }
+
+    /// Asks the claude command (through a login shell, so its usual PATH applies). Nil when
+    /// signed out or when Claude Code is not installed.
+    static func current() async -> ClaudeAccount? {
+        guard let out = await run("claude auth status --json") else { return nil }
+        return parse(out)
+    }
+
+    /// Signs Claude Code out on this Mac (for Terminal too). True when it worked.
+    static func signOut() async -> Bool {
+        let ok = await run("claude auth logout") != nil
+        Log.note(ok ? "signed Claude Code out" : "claude auth logout failed")
+        return ok
+    }
+
+    /// Runs one fixed command line; the output when it exits 0 within 20 seconds.
+    private static func run(_ command: String) async -> Data? {
+        await withCheckedContinuation { done in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/bin/zsh")
+                p.arguments = ["-lc", command]
+                let pipe = Pipe()
+                p.standardOutput = pipe
+                p.standardError = FileHandle.nullDevice
+                p.standardInput = FileHandle.nullDevice
+                do { try p.run() } catch { done.resume(returning: nil); return }
+                let timer = DispatchWorkItem { if p.isRunning { p.terminate() } }
+                DispatchQueue.global().asyncAfter(deadline: .now() + 20, execute: timer)
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                p.waitUntilExit()
+                timer.cancel()
+                done.resume(returning: p.terminationStatus == 0 ? data : nil)
+            }
+        }
     }
 }

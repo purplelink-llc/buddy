@@ -376,8 +376,13 @@ MainActor.assumeIsolated {
     expect(ExactUsage.parse(Data(#"{"error":"x"}"#.utf8)) == nil, "unexpected answers are rejected")
     expect(ExactUsage.Failure.noSignIn.signInHelps && ExactUsage.Failure.expired.signInHelps
            && ExactUsage.Failure.refused(401).signInHelps, "sign-in failures offer Sign In")
+    expect(!ExactUsage.Failure.keychainDenied.signInHelps, "a refused keychain prompt does not offer Sign In")
     expect(!ExactUsage.Failure.offline.signInHelps && !ExactUsage.Failure.unreadable.signInHelps,
            "network and format failures do not offer Sign In")
+    expect(ClaudeAccount.parse(Data(#"{"loggedIn":true,"email":"a@b.c","orgName":"Org"}"#.utf8)) == ClaudeAccount(email: "a@b.c", orgName: "Org"),
+           "auth status gives the signed-in account")
+    expect(ClaudeAccount.parse(Data(#"{"loggedIn":false}"#.utf8)) == nil, "signed out reads as no account")
+    expect(ClaudeAccount.parse(Data(#"{"loggedIn":true,"email":"a@b.c","orgName":""}"#.utf8))?.orgName == nil, "empty org is dropped")
 
     // MARK: chats stopped by a dropped connection
     for message in ["API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)",

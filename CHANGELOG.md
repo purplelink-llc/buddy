@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.0
+
+### Added
+- With exact usage on, Settings shows which account Claude Code is signed in with (email and organization), so a wrong account is easy to spot. **Change** next to it offers **Switch Account…** (signs out, then opens Terminal with `claude auth login` so the browser asks which account to use) and **Sign Out…** (runs `claude auth logout` after you confirm).
+
+### Fixed
+- When macOS refuses or you dismiss the keychain prompt, Buddy now says so ("turn exact usage off and on, then choose Always Allow") instead of reporting that no sign-in was found.
+
+### Note
+- Buddy has no account of its own: it uses Claude Code's sign-in. Signing out from Buddy also signs out `claude` in Terminal on that Mac. The Claude app keeps its own sign-in.
+
 ## 0.5.1
 
 ### Fixed

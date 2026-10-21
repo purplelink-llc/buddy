@@ -5,6 +5,10 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject var store: Store
     @ObservedObject var ui: UIState
+    /// Claude Code's signed-in account, read when exact usage is on.
+    @State private var account: ClaudeAccount?
+    @State private var checkedAccount = false
+    @State private var confirmSignOut = false
 
     static let releasesURL = URL(string: "https://github.com/purplelink-llc/buddy/releases/latest")!
 
@@ -41,12 +45,25 @@ struct SettingsView: View {
                 }
                 Section {
                     Toggle("Exact usage from Anthropic", isOn: $store.exactUsageOn)
+                    if store.exactUsageOn, checkedAccount, let account {
+                        LabeledContent("Account") {
+                            HStack {
+                                Text(account.orgName.map { "\(account.email) · \($0)" } ?? account.email)
+                                    .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                                Menu("Change") {
+                                    Button("Switch Account…") { signIn(switching: true) }
+                                    Button("Sign Out…", role: .destructive) { confirmSignOut = true }
+                                }
+                                .fixedSize()
+                            }
+                        }
+                    }
                     if let note = store.usage?.note {
                         HStack(alignment: .firstTextBaseline) {
                             Text(note).font(.caption).foregroundStyle(.orange)
                             Spacer(minLength: 8)
                             if store.usage?.needsSignIn == true {
-                                Button("Sign In…") { signIn() }
+                                Button("Sign In…") { signIn(switching: false) }
                                     .help("Opens Terminal to run claude auth login, which finishes in your browser")
                             }
                         }
@@ -94,20 +111,42 @@ struct SettingsView: View {
         }
         // A grouped Form scrolls, so it has no natural height of its own: size the window.
         .frame(width: 460, height: 900)
+        .task(id: store.exactUsageOn) { await refreshAccount() }
+        .confirmationDialog("Sign Claude Code out on this Mac?", isPresented: $confirmSignOut) {
+            Button("Sign Out", role: .destructive) {
+                Task { @MainActor in
+                    _ = await ClaudeAccount.signOut()
+                    await refreshAccount()
+                    store.onRefreshUsage?()
+                }
+            }
+        } message: {
+            Text("Buddy uses Claude Code's sign-in, so this also signs out claude in Terminal. The Claude app keeps its own sign-in.")
+        }
         .onAppear { ui.refreshConnection() }
     }
 
     /// Runs the sign-in, then checks again every few seconds for up to five minutes so the
     /// note clears as soon as Claude Code has saved the new sign-in.
-    private func signIn() {
-        ExactUsage.openSignIn()
+    private func signIn(switching: Bool) {
+        let before = account
+        ExactUsage.openSignIn(switching: switching)
         Task { @MainActor in
             for _ in 0..<60 {
                 try? await Task.sleep(for: .seconds(5))
-                guard store.exactUsageOn, store.usage?.needsSignIn == true else { return }
+                guard store.exactUsageOn else { return }
+                await refreshAccount()
                 store.onRefreshUsage?()
+                // Done once a (different) account is signed in and usage reads.
+                if account != nil, account != before || !switching, store.usage?.needsSignIn != true { return }
             }
         }
+    }
+
+    private func refreshAccount() async {
+        guard store.exactUsageOn else { checkedAccount = false; return }
+        account = await ClaudeAccount.current()
+        checkedAccount = true
     }
 
     static var version: String {
