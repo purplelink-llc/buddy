@@ -39,6 +39,17 @@ struct SettingsView: View {
                     Text("Buddy presses Try again (or types \"continue\") in a chat a dropped connection stopped, at most three times.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+                Section {
+                    Toggle("Exact usage from Anthropic", isOn: $store.exactUsageOn)
+                    if let note = store.usage?.note {
+                        Text(note).font(.caption).foregroundStyle(.orange)
+                    }
+                } header: {
+                    Text("Usage")
+                } footer: {
+                    Text("Off: Buddy estimates session usage from your chats on this Mac (shown with ≈). On: Buddy reads Claude Code's sign-in from your keychain and asks Anthropic every few minutes for exact session and weekly usage. Apart from the daily update check, this is the only time Buddy uses the network.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Section("Claude Code") {
                     LabeledContent("Hook") {
                         HStack {
@@ -61,8 +72,13 @@ struct SettingsView: View {
                 }
                 Section("About") {
                     LabeledContent("Version", value: Self.version)
+                    Toggle("Check for updates automatically", isOn: Binding(
+                        get: { ui.automaticUpdates },
+                        set: { on in ui.automaticUpdates = on; ui.setAutomaticUpdates?(on) }))
                     HStack {
-                        Button("Check for Updates…") { NSWorkspace.shared.open(Self.releasesURL) }
+                        Button("Check for Updates…") {
+                            if let check = ui.checkForUpdates { check() } else { NSWorkspace.shared.open(Self.releasesURL) }
+                        }
                         Button("Show Log") { NSWorkspace.shared.activateFileViewerSelecting([Log.fileURL]) }
                     }
                 }
@@ -70,7 +86,7 @@ struct SettingsView: View {
             .formStyle(.grouped)
         }
         // A grouped Form scrolls, so it has no natural height of its own: size the window.
-        .frame(width: 460, height: 790)
+        .frame(width: 460, height: 900)
         .onAppear { ui.refreshConnection() }
     }
 

@@ -59,6 +59,10 @@ final class UIState: ObservableObject {
     let setup = HookSetup()
     /// Opens the Settings window (set by the app delegate).
     var openSettings: (() -> Void)?
+    /// Sparkle, set by the app delegate (kept out of this file so tests build without it).
+    var checkForUpdates: (() -> Void)?
+    var setAutomaticUpdates: ((Bool) -> Void)?
+    @Published var automaticUpdates = true
     @Published private(set) var connected = true
     @Published private(set) var setupError: String?
     /// "Not now" on the first-run banner.
@@ -98,15 +102,25 @@ final class UIState: ObservableObject {
 
     /// Opens on hover, and on its own for a while when a session needs you or finishes.
     var expanded: Bool { hovering || store.peek != nil || showSetup }
-    /// Hidden entirely while nothing is going on.
-    var shown: Bool { expanded || store.hasNews }
+    /// Hidden entirely while nothing is going on; always there once usage is known.
+    var shown: Bool { expanded || store.hasNews || showsUsage }
 
-    var collapsedWidth: CGFloat { geometry.notchWidth > 0 ? geometry.notchWidth + 2 * 46 : 120 }
+    /// Usage sits beside the Guy, so the ears grow to fit it (both sides, to stay centred).
+    var showsUsage: Bool { store.usage?.session != nil }
+    var earWidth: CGFloat { showsUsage ? 84 : 46 }
+    var collapsedWidth: CGFloat { geometry.notchWidth > 0 ? geometry.notchWidth + 2 * earWidth : 120 + 2 * (earWidth - 46) }
 
     var size: CGSize {
         guard expanded else { return CGSize(width: collapsedWidth, height: geometry.barHeight) }
         return CGSize(width: max(collapsedWidth, 420),
-                      height: geometry.barHeight + bannerSpace + RowLayout.listHeight(rows: store.ordered.count) + 8)
+                      height: geometry.barHeight + usageSpace + bannerSpace + RowLayout.listHeight(rows: store.ordered.count) + 8)
+    }
+
+    /// The plan-usage row at the top of the open list.
+    static let usageHeight: CGFloat = 26
+    var usageSpace: CGFloat {
+        guard let u = store.usage, u.session != nil || u.week != nil else { return 0 }
+        return Self.usageHeight
     }
 
     /// The usage-limit banner above the list, when chats are paused.
@@ -161,7 +175,7 @@ final class UIState: ObservableObject {
     func rowID(atDistanceFromTop y: CGFloat) -> String? {
         guard expanded else { return nil }
         let rows = store.ordered
-        return RowLayout.index(atDistanceIntoList: y - geometry.barHeight - bannerSpace, scrolled: listScrolled,
+        return RowLayout.index(atDistanceIntoList: y - geometry.barHeight - usageSpace - bannerSpace, scrolled: listScrolled,
                                count: rows.count)
             .map { rows[$0].id }
     }

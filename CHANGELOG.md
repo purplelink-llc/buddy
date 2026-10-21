@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.0
+
+### Added
+- Session usage, always on: beside the character Buddy shows how much of your 5-hour session window you have used and when it resets ("≈64%" over "2:20"). It turns orange at 70% and red at 90%. The open list starts with a usage meter.
+- Usage is estimated from the token counts in your chats on this Mac (marked "≈"), calibrated on your recent session limits. Turn on **Exact usage from Anthropic** in Settings for exact session and weekly numbers; Buddy then reads Claude Code's sign-in from your keychain and asks Anthropic every few minutes.
+- Automatic updates through Sparkle. Buddy checks once a day and installs signed, notarized updates. **Check for Updates…** in Settings now checks right away, and **Check for updates automatically** turns the daily check off.
+
+### Changed
+- Buddy now uses the network for the daily update check (and for exact usage, if you turn it on). Before 0.5.0 it made no network connections.
+- Once Buddy knows your usage, the pill stays beside the notch even when no chat is active, and it is a little wider to fit the numbers.
+
 ## 0.4.0
 
 ### Added

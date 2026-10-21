@@ -195,6 +195,7 @@ struct PillView: View {
         HStack {
             Guy(mood: store.overallMood, size: ui.geometry.barHeight * 0.66, urgent: store.peek != nil)
                 .padding(.leading, 12)
+            if ui.showsUsage, let s = store.usage?.session { usageBadge(s, approx: store.usage?.exact == false) }
             Spacer()
             // The space beside the notch is 46 pt; the badge never reaches under the camera.
             badge.frame(maxWidth: 33, alignment: .trailing).padding(.trailing, 7)
@@ -232,6 +233,30 @@ struct PillView: View {
                 }
             }
         }
+    }
+
+    /// Session usage beside the Guy, always on: percent over the reset time ("≈65%" / "2:20").
+    private func usageBadge(_ w: UsageReading.Window, approx: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("\(approx ? "≈" : "")\(Int(w.percent.rounded()))%")
+                .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                .foregroundStyle(Self.usageTint(w.percent))
+            if let reset = w.resetsAt, reset > Date() {
+                Text(reset.formatted(.dateTime.hour(.defaultDigits(amPM: .omitted)).minute()))
+                    .font(.system(size: 9, weight: .medium).monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
+        // The left ear is 84 pt: 12 + the Guy + this, clear of the camera.
+        .frame(maxWidth: ui.earWidth - 12 - ui.geometry.barHeight * 0.66 - 12, alignment: .leading)
+        .padding(.leading, 5)
+        .help(store.usage?.exact == true ? "Session usage (exact) and when it resets" : "Estimated session usage and when it resets")
+    }
+
+    static func usageTint(_ percent: Double) -> Color {
+        percent >= 90 ? .red : percent >= 70 ? .orange : Color.white.opacity(0.85)
     }
 
     /// Time left until the usage limit resets, ticking by itself (no timers of ours).
@@ -327,7 +352,36 @@ struct PillView: View {
         .padding(.bottom, 6)
     }
 
+    /// Plan usage at the top of the list. "≈" marks Buddy's local estimate.
+    @ViewBuilder private var usageRow: some View {
+        if let u = store.usage, u.session != nil || u.week != nil {
+            HStack(spacing: 16) {
+                if let s = u.session { meter("Session", s, approx: !u.exact, weekly: false) }
+                if let w = u.week { meter("Week", w, approx: false, weekly: true) }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 18)
+            .frame(height: UIState.usageHeight)
+            .help(u.exact ? "Exact usage from Anthropic" : "Estimated from your chats on this Mac (Settings → Usage for exact numbers)")
+        }
+    }
+
+    private func meter(_ label: String, _ w: UsageReading.Window, approx: Bool, weekly: Bool) -> some View {
+        let tint: Color = w.percent >= 90 ? .red : w.percent >= 70 ? .orange : Mood.working.color
+        return HStack(spacing: 6) {
+            Text(label).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+            ProgressView(value: min(max(w.percent, 0), 100), total: 100).progressViewStyle(.linear).tint(tint).frame(width: 56)
+            Text("\(approx ? "≈" : "")\(Int(w.percent.rounded()))%")
+                .font(.system(size: 10, weight: .semibold).monospacedDigit())
+            if let reset = w.resetsAt, reset > Date() {
+                Text(weekly ? reset.formatted(.dateTime.weekday(.abbreviated).hour()) : reset.formatted(date: .omitted, time: .shortened))
+                    .font(.system(size: 10)).foregroundStyle(.tertiary)
+            }
+        }
+    }
+
     @ViewBuilder private var rows: some View {
+        usageRow
         if ui.showSetup { setupBanner }
         if !store.pausedSessions.isEmpty { limitBanner }
         if store.ordered.isEmpty {

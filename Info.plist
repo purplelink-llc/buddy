@@ -2,17 +2,37 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>CFBundleExecutable</key><string>Buddy</string>
-	<key>CFBundleIconFile</key><string>Buddy</string>
-	<key>CFBundleIdentifier</key><string>llc.purplelink.Buddy</string>
-	<key>CFBundleName</key><string>Buddy</string>
-	<key>CFBundleDisplayName</key><string>Buddy</string>
-	<key>CFBundlePackageType</key><string>APPL</string>
-	<key>CFBundleShortVersionString</key><string>0.4.0</string>
-	<key>CFBundleVersion</key><string>7</string>
-	<key>LSMinimumSystemVersion</key><string>14.0</string>
-	<key>LSUIElement</key><true/>
-	<key>NSAppleEventsUsageDescription</key><string>Buddy brings the Terminal or iTerm2 tab of a Claude session to the front when you click it.</string>
-	<key>NSHighResolutionCapable</key><true/>
+	<key>CFBundleDisplayName</key>
+	<string>Buddy</string>
+	<key>CFBundleExecutable</key>
+	<string>Buddy</string>
+	<key>CFBundleIconFile</key>
+	<string>Buddy</string>
+	<key>CFBundleIdentifier</key>
+	<string>llc.purplelink.Buddy</string>
+	<key>CFBundleName</key>
+	<string>Buddy</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.5.0</string>
+	<key>CFBundleVersion</key>
+	<string>8</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Buddy brings the Terminal or iTerm2 tab of a Claude session to the front when you click it.</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUFeedURL</key>
+	<string>https://raw.githubusercontent.com/purplelink-llc/buddy/main/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>6yp5/7HTj/lA+mxplvbKsfksGLsSvpgXUUtsVhMfW8U=</string>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
 </dict>
 </plist>

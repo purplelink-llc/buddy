@@ -15,6 +15,17 @@ cd "$(dirname "$0")"
 FLAGS=(-O -swift-version 5 -target arm64-apple-macos14.0)
 APP=build/Buddy.app
 
+# Sparkle (auto-updates): the official release, checked against a pinned SHA-256.
+SPARKLE_VERSION=2.10.0
+SPARKLE_SHA256=c2bf58aa8387266ac179357b1415d6f2635f044da8be41042af32425dae6da0c
+SPARKLE="build/vendor/Sparkle-$SPARKLE_VERSION"
+if [ ! -d "$SPARKLE/Sparkle.framework" ]; then
+  mkdir -p "$SPARKLE"
+  curl -fsSL -o "$SPARKLE.tar.xz" "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz"
+  echo "$SPARKLE_SHA256  $SPARKLE.tar.xz" | shasum -a 256 -c - >/dev/null || { echo "Sparkle download failed its checksum" >&2; rm -rf "${SPARKLE:?}" "$SPARKLE.tar.xz"; exit 1; }
+  tar -xJf "$SPARKLE.tar.xz" -C "$SPARKLE"
+fi
+
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
 cp Info.plist "$APP/Contents/Info.plist"
@@ -26,7 +37,16 @@ for size in 16 32 128 256 512; do
   sips -z $((size * 2)) $((size * 2)) design/icon-1024.png --out "build/Buddy.iconset/icon_${size}x${size}@2x.png" >/dev/null
 done
 iconutil -c icns build/Buddy.iconset -o "$APP/Contents/Resources/Buddy.icns"
-swiftc "${FLAGS[@]}" -o "$APP/Contents/MacOS/Buddy" Sources/*.swift
+swiftc "${FLAGS[@]}" -F "$SPARKLE" -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
+  -o "$APP/Contents/MacOS/Buddy" Sources/*.swift
+# Sparkle's updater, trimmed as in the other Purplelink apps: a non-sandboxed app needs only
+# Autoupdate and Updater.app, not the XPC services, headers or modules.
+mkdir -p "$APP/Contents/Frameworks"
+cp -R "$SPARKLE/Sparkle.framework" "$APP/Contents/Frameworks/"
+SPARKLE_FW="$APP/Contents/Frameworks/Sparkle.framework"
+for gone in XPCServices Headers PrivateHeaders Modules; do
+  rm -rf "${SPARKLE_FW:?}/$gone" "${SPARKLE_FW:?}/Versions/B/$gone"
+done
 swiftc "${FLAGS[@]}" -o build/buddy-hook Hook/main.swift
 
 SIGN_ID="${BUDDY_SIGN_ID:-}"
@@ -43,6 +63,11 @@ xattr -cr "$APP" build/buddy-hook 2>/dev/null || true
 
 TS="--timestamp"; [ "$SIGN_ID" = "-" ] && TS="--timestamp=none"
 OPTS=(--force --options runtime); [ "$SIGN_ID" = "-" ] && OPTS=(--force)
+# Inside out, never --deep: Sparkle's helpers, then its framework, then the hook, then the app.
+for nested in "$SPARKLE_FW/Versions/B/Autoupdate" "$SPARKLE_FW/Versions/B/Updater.app"; do
+  codesign "${OPTS[@]}" --preserve-metadata=entitlements $TS --sign "$SIGN_ID" "$nested"
+done
+codesign "${OPTS[@]}" $TS --sign "$SIGN_ID" "$SPARKLE_FW"
 codesign "${OPTS[@]}" $TS --identifier llc.purplelink.buddy-hook --sign "$SIGN_ID" build/buddy-hook
 # The app ships the hook (Contents/MacOS) so it can connect itself to Claude Code.
 cp build/buddy-hook "$APP/Contents/MacOS/buddy-hook"
@@ -53,7 +78,7 @@ echo "built $APP and build/buddy-hook"
 
 case "${1:-}" in
   test)
-    swiftc "${FLAGS[@]}" -o build/tests Tests/main.swift Sources/Model.swift Sources/Jump.swift Sources/Inbox.swift Sources/HookSetup.swift
+    swiftc "${FLAGS[@]}" -o build/tests Tests/main.swift Sources/Model.swift Sources/Jump.swift Sources/Inbox.swift Sources/HookSetup.swift Sources/Usage.swift
     sandbox=$(mktemp -d "${TMPDIR:-/tmp}/buddy-tests.XXXXXX")
     HOME="$sandbox" CFFIXED_USER_HOME="$sandbox" BUDDY_HOOK="$PWD/build/buddy-hook" build/tests
     rm -rf "${sandbox:?}"
@@ -81,6 +106,28 @@ case "${1:-}" in
     ditto -c -k --keepParent "$APP" "$ZIP"
     spctl -a -vv -t exec "$APP"
     shasum -a 256 "$ZIP"
+    # The Sparkle feed for this release (published to the public repo after the zip is up).
+    VERSION=$(defaults read "$PWD/$APP/Contents/Info" CFBundleShortVersionString)
+    BUILD=$(defaults read "$PWD/$APP/Contents/Info" CFBundleVersion)
+    SIGNATURE=$("$SPARKLE/bin/sign_update" "$ZIP")  # sparkle:edSignature="..." length="..."
+    cat > build/appcast.xml <<FEED
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>Buddy</title>
+    <item>
+      <title>Buddy $VERSION</title>
+      <pubDate>$(LC_ALL=C date -R)</pubDate>
+      <sparkle:version>$BUILD</sparkle:version>
+      <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <sparkle:releaseNotesLink>https://github.com/purplelink-llc/buddy/releases/tag/v$VERSION</sparkle:releaseNotesLink>
+      <enclosure url="https://github.com/purplelink-llc/buddy/releases/download/v$VERSION/Buddy.zip" $SIGNATURE type="application/octet-stream"/>
+    </item>
+  </channel>
+</rss>
+FEED
+    echo "wrote build/appcast.xml for $VERSION ($BUILD)"
     ;;
   --install)
     osascript -e 'tell application id "llc.purplelink.Buddy" to quit' 2>/dev/null || true

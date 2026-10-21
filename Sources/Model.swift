@@ -164,6 +164,18 @@ final class Store: ObservableObject {
         set { defaults.set(!newValue, forKey: "muteDone"); objectWillChange.send() }
     }
 
+    /// Plan usage for the row at the top of the list (estimated, or exact when opted in).
+    @Published var usage: UsageReading?
+    /// Asks the app to re-read usage now (set by the app delegate).
+    var onRefreshUsage: (() -> Void)?
+
+    /// Opt-in: exact usage from Anthropic, using Claude Code's sign-in. Off by default; the
+    /// only time Buddy uses the network.
+    var exactUsageOn: Bool {
+        get { defaults.bool(forKey: "exactUsage") }
+        set { defaults.set(newValue, forKey: "exactUsage"); objectWillChange.send(); onRefreshUsage?() }
+    }
+
     /// Buddy retries chats a dropped connection stopped, once you are back online.
     var retryConnectionsOn: Bool {
         get { !defaults.bool(forKey: "noConnectionRetry") }

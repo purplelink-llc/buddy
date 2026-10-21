@@ -2,10 +2,11 @@ import AppKit
 import Combine
 import Network
 import ServiceManagement
+import Sparkle
 import SwiftUI
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, SPUStandardUserDriverDelegate {
     let store = Store()
     lazy var continuer = Continuer(store: store)
     /// Finds chats a usage limit paused before Buddy was listening. Used only on scanQueue.
@@ -17,6 +18,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var online = true
     var retryTask: Task<Void, Never>?
     var settingsWindow: NSWindow?
+    /// Sparkle: checks the feed in Info.plist once a day and installs signed updates.
+    var updater: SPUStandardUpdaterController!
+    /// Plan usage: estimated from transcripts (on scanQueue), or exact when opted in.
+    let usageScanner = UsageScanner()
+    var usageTimer: Timer?
     var ui: UIState!
     lazy var inbox = Inbox { [weak self] events in
         MainActor.assumeIsolated { self?.store.apply(events) }
@@ -38,6 +44,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ui = UIState(store: store, geometry: geometry)
         ui.refreshConnection()
         ui.openSettings = { [weak self] in self?.showSettings() }
+        updater = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: self)
+        ui.checkForUpdates = { [weak self] in
+            NSApp.activate()
+            self?.updater.checkForUpdates(nil)
+        }
+        ui.automaticUpdates = updater.updater.automaticallyChecksForUpdates
+        ui.setAutomaticUpdates = { [weak self] on in self?.updater.updater.automaticallyChecksForUpdates = on }
+        store.onRefreshUsage = { [weak self] in self?.refreshUsage() }
+        refreshUsage()
+        let usageTick = Timer(timeInterval: 180, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshUsage() }
+        }
+        usageTick.tolerance = 30
+        RunLoop.main.add(usageTick, forMode: .common)
+        usageTimer = usageTick
         // `open -a Buddy --args --settings` opens Settings at launch.
         if CommandLine.arguments.contains("--settings") { showSettings() }
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
@@ -127,6 +148,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// The Settings window: made once, then brought forward. Buddy has no Dock icon, so it
     /// activates itself to put the window in front.
+    /// Reads the local estimate, then (if opted in) the exact numbers, falling back to the
+    /// estimate with a note when Anthropic or the sign-in is unavailable.
+    func refreshUsage() {
+        let scanner = usageScanner
+        let exact = store.exactUsageOn
+        scanQueue.async {
+            let local = scanner.scan()
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    guard exact else { self.store.usage = local; return }
+                    Task { @MainActor in
+                        switch await ExactUsage.fetch() {
+                        case .success(let reading):
+                            self.store.usage = reading
+                        case .failure(let failure):
+                            var fallback = local
+                            fallback.note = failure.message
+                            self.store.usage = fallback
+                            Log.note("exact usage unavailable: \(failure.message)")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Buddy has no Dock icon, so Sparkle shows scheduled update reminders gently (it brings
+    /// the window forward when Buddy is next used) instead of popping up over other apps.
+    nonisolated var supportsGentleScheduledUpdateReminders: Bool { true }
+
     func showSettings() {
         if settingsWindow == nil {
             let window = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(store: store, ui: ui)))

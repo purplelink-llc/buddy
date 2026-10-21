@@ -337,6 +337,44 @@ MainActor.assumeIsolated {
     sounds.retryDisconnected(fresh: true)
     expect(retriedWhileOff == 0, "no automatic retries when the setting is off")
 
+    // MARK: usage estimate and exact usage parsing
+    expect(UsageEstimate.weight(model: "claude-sonnet-4-5", input: 100, output: 10, cacheWrite: 0, cacheRead: 1000) == 250,
+           "weights: input 1, output 5, cache read 0.1 (Sonnet)")
+    expect(abs(UsageEstimate.weight(model: "claude-opus-5-5", input: 100, output: 0, cacheWrite: 0, cacheRead: 0) - 167) < 0.01, "Opus counts 1.67x")
+    let base = at("2026-10-21 08:00", "America/New_York")
+    func estReply(_ minutes: Double, _ w: Double) -> UsageReply { UsageReply(date: base.addingTimeInterval(minutes * 60), weight: w) }
+    // One past limit: window 08:00-13:00 hit at 12:00 after 1000 units.
+    let pastLimit = UsageLimit(hitAt: base.addingTimeInterval(4 * 3600), resetsAt: base.addingTimeInterval(5 * 3600))
+    let replies = [estReply(10, 400), estReply(120, 600), estReply(310, 100), estReply(330, 150)]  // 13:10 and 13:30 start a new window
+    expect(UsageEstimate.capacity(replies: replies, limits: [pastLimit]) == 1000, "capacity is what the limit took")
+    let afternoon = base.addingTimeInterval(6 * 3600)  // 14:00
+    let win = UsageEstimate.currentWindow(replies: replies, limits: [pastLimit], now: afternoon)
+    expect(win?.start == base.addingTimeInterval(310 * 60) && win?.end == base.addingTimeInterval(610 * 60), "window starts at the first reply after the reset")
+    let est = UsageEstimate.reading(replies: replies, limits: [pastLimit], now: afternoon)
+    expect(est.session?.percent == 25 && !est.exact, "250 of 1000 = 25%, got \(String(describing: est.session?.percent))")
+    expect(UsageEstimate.reading(replies: replies, limits: [], now: afternoon).session == nil, "no estimate before any limit")
+    let pending = UsageEstimate.currentWindow(replies: replies, limits: [pastLimit], now: base.addingTimeInterval(4.5 * 3600))
+    expect(pending?.end == pastLimit.resetsAt, "while limited, the window is the one the limit names")
+
+    // The scanner counts a streamed reply once and uses session limits only.
+    let usageProjects = scratch.appendingPathComponent("usage/projects/-p", isDirectory: true)
+    try! FileManager.default.createDirectory(at: usageProjects, withIntermediateDirectories: true)
+    let iso2 = ISO8601DateFormatter()
+    let t = Date().addingTimeInterval(-3600)
+    func usageLine(_ id: String, _ out: Int, _ date: Date) -> String {
+        #"{"type":"assistant","timestamp":"\#(iso2.string(from: date))","message":{"id":"\#(id)","model":"claude-sonnet-4-5","usage":{"input_tokens":0,"output_tokens":\#(out),"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}"#
+    }
+    let weeklyLimit = #"{"type":"assistant","isApiErrorMessage":true,"error":"rate_limit","timestamp":"\#(iso2.string(from: t))","message":{"content":[{"type":"text","text":"You've hit your weekly limit · resets Oct 30, 9am (America/Chicago)"}]}}"#
+    try! ([usageLine("m1", 10, t), usageLine("m1", 40, t), usageLine("m2", 20, t), weeklyLimit].joined(separator: "\n") + "\n")
+        .write(to: usageProjects.appendingPathComponent("s.jsonl"), atomically: true, encoding: .utf8)
+    _ = UsageScanner(projectsRoot: scratch.appendingPathComponent("usage/projects")).scan()  // no session limit: no estimate, no crash
+    expect(true, "scanner runs on synthetic transcripts")
+
+    let exactJSON = #"{"five_hour":{"utilization":42.5,"resets_at":"2026-10-21T18:20:00+00:00"},"seven_day":{"utilization":17,"resets_at":"2026-10-25T13:00:00+00:00"},"seven_day_opus":null}"#
+    let exactReading = ExactUsage.parse(Data(exactJSON.utf8))
+    expect(exactReading?.exact == true && exactReading?.session?.percent == 42.5 && exactReading?.week?.percent == 17, "exact usage parses")
+    expect(ExactUsage.parse(Data(#"{"error":"x"}"#.utf8)) == nil, "unexpected answers are rejected")
+
     // MARK: chats stopped by a dropped connection
     for message in ["API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)",
                     "API Error: Connection lost mid-response. The response above may be incomplete.",

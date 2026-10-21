@@ -15,11 +15,13 @@ func event(_ json: String, at date: Date = Date()) -> HookEvent {
 }
 
 @MainActor
-func render(_ name: String, height: CGFloat, expanded: Bool, _ events: [HookEvent], autoOn: Bool = false) {
+func render(_ name: String, height: CGFloat, expanded: Bool, _ events: [HookEvent], autoOn: Bool = false,
+            usage: UsageReading? = nil) {
     let defaults = UserDefaults(suiteName: "buddy-demo-\(UUID().uuidString)")!
     defaults.set(autoOn, forKey: "autoTypeContinue")
     let store = Store(defaults: defaults, sound: { _ in })
     store.apply(events)
+    store.usage = usage
     let screen = NSRect(x: 0, y: 0, width: 760, height: height)
     let ui = UIState(store: store, geometry: NotchGeometry(screenFrame: screen, notchWidth: 186, barHeight: 32))
     ui.hovering = expanded
@@ -97,4 +99,13 @@ MainActor.assumeIsolated {
         event(#"{"hook_event_name":"UserPromptSubmit","session_id":"w","cwd":"/Users/me/Code/acme","prompt":"go"}"#),
     ])
     render("collapsed-limit", height: 70, expanded: false, limitEvents)
+
+    // Collapsed with the always-on usage readout beside the Guy, while two chats work.
+    let usage = UsageReading(session: .init(percent: 64, resetsAt: now.addingTimeInterval(2 * 3600 + 20 * 60)), week: nil, exact: false)
+    render("collapsed-usage", height: 70, expanded: false, [
+        event(#"{"hook_event_name":"UserPromptSubmit","session_id":"w1","cwd":"/Users/me/Code/acme","prompt":"go"}"#),
+        event(#"{"hook_event_name":"UserPromptSubmit","session_id":"w2","cwd":"/Users/me/Code/widgets","prompt":"go"}"#),
+    ], usage: usage)
+    render("collapsed-usage-limit", height: 70, expanded: false, limitEvents,
+           usage: UsageReading(session: .init(percent: 100, resetsAt: reset), week: nil, exact: true))
 }
