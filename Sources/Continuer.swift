@@ -258,7 +258,12 @@ enum ClaudeUI {
     private static func app() -> AXUIElement? {
         guard let pid = NSRunningApplication.runningApplications(withBundleIdentifier: Jump.claudeApp).first?
             .processIdentifier else { return nil }
-        return AXUIElementCreateApplication(pid)
+        let app = AXUIElementCreateApplication(pid)
+        // The Claude app is Electron: its chat (Prompt box, buttons) is in the tree only once an
+        // assistive client asks for it, and a relaunch or update forgets that. Ask every time;
+        // it is one cheap call, and the tree fills in within a second.
+        AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        return app
     }
 
     /// Breadth-first through the front window, bounded (the app's tree is a few hundred nodes).

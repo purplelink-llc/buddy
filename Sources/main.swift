@@ -166,6 +166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUStandardUserDriverD
                         case .failure(let failure):
                             var fallback = local
                             fallback.note = failure.message
+                            fallback.needsSignIn = failure.signInHelps
                             self.store.usage = fallback
                             Log.note("exact usage unavailable: \(failure.message)")
                         }

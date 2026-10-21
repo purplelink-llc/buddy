@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.1
+
+### Fixed
+- Auto, **Continue now** and connection retries work again after the Claude app restarts or updates. The Claude app stopped showing its message box to Buddy until something asked for it, so every try ended with "no Prompt box appeared". Buddy now asks for it each time.
+
+### Added
+- When exact usage can't find or use Claude Code's sign-in, Settings shows a **Sign In…** button next to the message. It opens Terminal and runs `claude auth login`, which finishes in your default browser; Buddy picks up the sign-in within a few seconds.
+
 ## 0.5.0
 
 ### Added

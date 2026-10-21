@@ -42,7 +42,14 @@ struct SettingsView: View {
                 Section {
                     Toggle("Exact usage from Anthropic", isOn: $store.exactUsageOn)
                     if let note = store.usage?.note {
-                        Text(note).font(.caption).foregroundStyle(.orange)
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(note).font(.caption).foregroundStyle(.orange)
+                            Spacer(minLength: 8)
+                            if store.usage?.needsSignIn == true {
+                                Button("Sign In…") { signIn() }
+                                    .help("Opens Terminal to run claude auth login, which finishes in your browser")
+                            }
+                        }
                     }
                 } header: {
                     Text("Usage")
@@ -88,6 +95,19 @@ struct SettingsView: View {
         // A grouped Form scrolls, so it has no natural height of its own: size the window.
         .frame(width: 460, height: 900)
         .onAppear { ui.refreshConnection() }
+    }
+
+    /// Runs the sign-in, then checks again every few seconds for up to five minutes so the
+    /// note clears as soon as Claude Code has saved the new sign-in.
+    private func signIn() {
+        ExactUsage.openSignIn()
+        Task { @MainActor in
+            for _ in 0..<60 {
+                try? await Task.sleep(for: .seconds(5))
+                guard store.exactUsageOn, store.usage?.needsSignIn == true else { return }
+                store.onRefreshUsage?()
+            }
+        }
     }
 
     static var version: String {

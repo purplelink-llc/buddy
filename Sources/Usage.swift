@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Security
 
@@ -14,6 +15,8 @@ struct UsageReading: Equatable {
     var exact: Bool
     /// Why exact usage is unavailable right now, if it was asked for.
     var note: String?
+    /// True when signing in to Claude Code again would fix it (Settings then offers Sign In).
+    var needsSignIn = false
 }
 
 /// One reply's cost in "weighted tokens", Buddy's unit for the local estimate.
@@ -179,6 +182,42 @@ enum ExactUsage {
             case .offline: return "Could not reach Anthropic."
             }
         }
+        var signInHelps: Bool {
+            switch self {
+            case .noSignIn, .expired, .refused: return true
+            case .unreadable, .offline: return false
+            }
+        }
+    }
+
+    /// Opens Terminal running `claude auth login`, which opens the sign-in page in your default
+    /// browser and saves the sign-in to the keychain, where Buddy then finds it. Buddy never
+    /// sees your password; it only reads the token Claude Code saved.
+    @MainActor
+    static func openSignIn() {
+        let script = """
+        #!/bin/zsh -l
+        # Opened by Buddy: signs Claude Code in so Buddy can show exact usage.
+        clear
+        if command -v claude >/dev/null 2>&1; then
+          echo "Signing Claude Code in. Your browser opens to finish; come back here when it says you're done."
+          echo
+          claude auth login && echo && echo "Signed in. Buddy picks it up within a few seconds; you can close this window."
+        else
+          echo "Claude Code isn't installed here (no claude command on your PATH)."
+          echo "Install it from https://claude.com/claude-code, then try Sign In again from Buddy's Settings."
+        fi
+        """
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Buddy Sign In.command")
+        do {
+            try script.write(to: url, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
+        } catch {
+            Log.note("could not write the sign-in script: \(error.localizedDescription)")
+            return
+        }
+        Log.note("opening Terminal for claude auth login")
+        NSWorkspace.shared.open(url)
     }
 
     static func fetch() async -> Result<UsageReading, Failure> {

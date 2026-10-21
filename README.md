@@ -48,7 +48,7 @@ Buddy asks for more than most small apps, so here is all of it.
 Buddy keeps a small log of what it does (chat titles included) in `~/Library/Logs/Buddy/buddy.log`, capped at about 1 MB.
 
 - **Token counts in your transcripts** (for the usage row). Buddy adds up the tokens your chats on this Mac used in the current 5-hour window and compares that with what your recent session limits took. It shows the result with "≈".
-- **Your Claude Code sign-in (optional, off by default).** If you turn on **Exact usage from Anthropic** in Settings, Buddy reads Claude Code's sign-in from your keychain (macOS asks first) and asks Anthropic's usage service every few minutes for your exact session and weekly usage. The sign-in is used only for that request and is never stored or logged.
+- **Your Claude Code sign-in (optional, off by default).** If you turn on **Exact usage from Anthropic** in Settings, Buddy reads Claude Code's sign-in from your keychain (macOS asks first) (if Claude Code isn't signed in yet, **Sign In…** in Settings opens Terminal with `claude auth login`, which finishes in your browser) and asks Anthropic's usage service every few minutes for your exact session and weekly usage. The sign-in is used only for that request and is never stored or logged.
 
 Buddy uses the network for two things only: the daily update check (it fetches `appcast.xml` from this repository on GitHub, and the update itself from GitHub Releases), and exact usage if you turn it on. Both can be turned off in Settings. Everything else stays on your Mac.
 
