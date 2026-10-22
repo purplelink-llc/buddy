@@ -283,6 +283,37 @@ MainActor.assumeIsolated {
     let earlyTries = autoHanded.filter { $0.contains("early") }.count
     expect(earlyTries == 3 && auto.sessions["early"]?.continueAttempts == 3, "at most three tries per chat, got \(earlyTries)")
 
+    // MARK: Skipped tries don't count, and unlocking retries them at once (2026-10-22: the Mac
+    // locked overnight and the tries ran out without ever reaching the chats)
+    var lockClock = at("2026-10-21 21:22", "America/New_York")
+    var lockHanded = 0
+    let locked = Store(defaults: defaults, sound: { _ in }, now: { lockClock }, titles: titles)
+    locked.onContinue = { sessions, manual in if !manual { lockHanded += 1; sessions.forEach { locked.continueSkipped($0.id) } } }
+    locked.apply([event(#"{"hook_event_name":"UserPromptSubmit","session_id":"night","prompt":"work"}"#, host: appHost2, at: lockClock),
+                  event(#"{"hook_event_name":"StopFailure","session_id":"night","error":"rate_limit","last_assistant_message":"You've hit your session limit · resets 12:20am (America/New_York)"}"#, host: appHost2, at: lockClock)])
+    for minute in stride(from: 21, through: 57, by: 3) {
+        lockClock = at("2026-10-22 00:\(minute)", "America/New_York")
+        locked.runAutoContinue()
+    }
+    expect(lockHanded == 13 && locked.sessions["night"]?.continueAttempts == 0,
+           "skipped tries (locked screen) keep coming every 3 minutes and use up none of the three, got \(lockHanded) tries, \(locked.sessions["night"]?.continueAttempts ?? -1) counted")
+    lockClock = at("2026-10-22 01:00", "America/New_York")
+    locked.runAutoContinue()
+    expect(lockHanded == 14, "a try is due again after the gap")
+    lockClock = at("2026-10-22 01:01", "America/New_York")
+    locked.screenUnlocked()
+    expect(lockHanded == 15, "unlocking retries a skipped chat at once, without waiting for the gap")
+    locked.onContinue = { _, manual in if !manual { lockHanded += 1 } }  // this time it reaches the chat
+    lockClock = at("2026-10-22 01:05", "America/New_York")
+    locked.runAutoContinue()
+    expect(locked.sessions["night"]?.continueAttempts == 1, "a try that reaches the chat counts")
+    defaults.set(true, forKey: "keepAwakeForAuto")
+    expect(locked.keepAwakeOn && locked.autoContinuePending, "keep-awake wants the display on while Auto still has a chat to try")
+    defaults.set(false, forKey: "autoTypeContinue")
+    expect(!locked.autoContinuePending, "nothing pending once Auto is off")
+    defaults.set(true, forKey: "autoTypeContinue")
+    defaults.removeObject(forKey: "keepAwakeForAuto")
+
     // A pause from yesterday is left alone; a rescan of the same pause keeps the count.
     let rescanStore = Store(defaults: defaults, sound: { _ in }, now: { autoClock }, titles: titles)
     var stale = auto.sessions["early"]!

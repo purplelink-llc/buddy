@@ -29,10 +29,12 @@ struct SettingsView: View {
                             store.autoContinueOn = on
                             if on, !Continuer.canType { Continuer.askToType() }
                         }))
+                    Toggle("Keep the Mac awake until they continue", isOn: $store.keepAwakeOn)
+                        .disabled(!store.autoContinueOn)
                 } header: {
                     Text("Usage limits")
                 } footer: {
-                    Text("About a minute after each chat's limit resets, Buddy types \"continue\" into it, and tries again up to three times if it is still paused.")
+                    Text("About a minute after each chat's limit resets, Buddy types \"continue\" into it, and tries again up to three times if it is still paused. Buddy can't type into a locked Mac: it tries again the moment you unlock. Keep awake stops the display from sleeping (so the Mac doesn't lock) only while chats are waiting, which leaves it unlocked while you're away.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section {

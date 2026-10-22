@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.0
+
+### Fixed
+- Auto no longer gives up on chats it never reached. If the Mac is locked when a limit resets, Buddy doesn't type (it would land in the password field) and tries again the moment you unlock, instead of holding the run open until morning and losing its retries.
+- Tries that never reach a chat (locked screen, no message box, another run still busy) don't count against Auto's three.
+- Right after you unlock, Buddy waits a few seconds for the Claude app to redraw, and if a chat's message box still doesn't appear it opens the chat again and brings the window forward. On 2026-10-22 every try right after unlocking ended with "no Prompt box appeared".
+- Buddy's log no longer repeats the same exact-usage problem every three minutes.
+
+### Added
+- **Keep the Mac awake until they continue** (Settings → Usage limits, off by default). While Auto has chats waiting for a limit to reset, Buddy keeps the display from sleeping so the Mac doesn't lock, and lets it sleep again once they've continued. The Mac stays unlocked while you're away, so leave it off if that matters where you work. Closing the lid or locking by hand still stops Buddy until you unlock.
+
 ## 0.7.0
 
 ### Added

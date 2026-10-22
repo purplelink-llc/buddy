@@ -16,6 +16,10 @@ final class Continuer {
 
     private var running = false
     private let store: Store
+    /// When the Mac was last unlocked: the Claude app needs a moment to redraw its chat
+    /// before the Prompt box can be found (it failed straight after unlocking on 2026-10-22).
+    static var unlockedAt: Date?
+    static let settleAfterUnlock: TimeInterval = 5
 
     init(store: Store) {
         self.store = store
@@ -38,7 +42,11 @@ final class Continuer {
     }
 
     func run(_ sessions: [Session], manual: Bool, tryAgainFirst: Bool = false) {
-        guard !running else { return }
+        guard !running else {
+            // Busy with another run: these tries never happened, so Auto retries them later.
+            if !manual { sessions.forEach { store.continueSkipped($0.id) } }
+            return
+        }
         running = true
         Log.note("continuing \(sessions.count) paused chats (\(manual ? "Continue now" : "automatic"))")
         Task {
@@ -60,13 +68,19 @@ final class Continuer {
                         store.continueStatus = "Allow Buddy in Accessibility to continue chats"
                         return
                     }
-                    guard await waitUntilSafeToType(manual: manual) else { continue }
+                    guard await waitUntilSafeToType(manual: manual) else {
+                        // Locked (or you kept typing): no keystrokes now. Unlocking retries it.
+                        Log.note("continue \(current.name): skipped: \(Self.screenLocked ? "screen locked" : "you were typing")")
+                        if !manual { store.continueSkipped(session.id) }
+                        continue
+                    }
                     guard store.sessions[session.id]?.mood == .paused else { continue }
                     store.continueStatus = "Continuing \(index + 1) of \(sessions.count)…"
                     Jump.desktopChat(sessionID: sessionID).perform()
                     borrowedFocus = true
-                    let outcome = await continueOpenChat(tryAgainFirst: tryAgainFirst)
+                    let outcome = await continueOpenChat(sessionID: sessionID, tryAgainFirst: tryAgainFirst)
                     if outcome.hasPrefix("sent") { sent += 1 }
+                    if outcome.hasPrefix("skipped"), !manual { store.continueSkipped(session.id) }
                     Log.note("continue \(current.name): \(outcome)")
                 default:
                     continue
@@ -84,7 +98,7 @@ final class Continuer {
 
     /// Types into the chat the deep link just opened: waits for its Prompt box, focuses it,
     /// types, presses Return, and clicks Send if the text is still sitting there.
-    private func continueOpenChat(tryAgainFirst: Bool = false) async -> String {
+    private func continueOpenChat(sessionID: String, tryAgainFirst: Bool = false) async -> String {
         try? await Task.sleep(for: .milliseconds(1200))  // let the app switch chats
         if tryAgainFirst {
             for _ in 0..<12 {  // the error card may take a moment to appear
@@ -96,9 +110,16 @@ final class Continuer {
             }
         }
         var prompt: AXUIElement?
-        for _ in 0..<40 {  // an old chat may take a few seconds to be ready
+        for attempt in 0..<60 {  // an old chat may take a few seconds to be ready
             guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == Jump.claudeApp else {
                 return "skipped: the Claude app is not in front"
+            }
+            if attempt == 24 {
+                // Still nothing after about six seconds: open the chat again and bring its
+                // window forward (after waking or unlocking, the first open can get lost).
+                Jump.desktopChat(sessionID: sessionID).perform()
+                ClaudeUI.raiseWindow()
+                try? await Task.sleep(for: .milliseconds(1200))
             }
             // Accept the box only once it is the same element twice in a row, so a box from
             // the chat that was open before the switch is not typed into.
@@ -124,15 +145,24 @@ final class Continuer {
         return ClaudeUI.value(of: prompt).contains(Self.message) ? "typed, but not sent" : "sent with the Send button"
     }
 
-    /// Waits (up to 12 hours) for an unlocked screen and, for the automatic run, a pause in
-    /// your typing and clicking (mouse movement does not count).
+    /// True once it is safe to type: the screen is unlocked (and has been for a few seconds)
+    /// and, for the automatic run, you have paused typing and clicking (mouse movement does
+    /// not count). A locked screen returns false at once instead of holding the run open for
+    /// hours; unlocking the Mac retries it. Waits at most ten minutes for a typing pause.
     private func waitUntilSafeToType(manual: Bool) async -> Bool {
-        let deadline = Date().addingTimeInterval(12 * 3600)
+        let deadline = Date().addingTimeInterval(10 * 60)
         while Date() < deadline {
-            let locked = Self.screenLocked
-            if !locked, manual || Self.secondsSinceTypingOrClicking >= Self.quietSeconds { return true }
-            store.continueStatus = locked ? "Waiting for you to unlock the Mac…" : "Waiting for you to stop typing…"
-            try? await Task.sleep(for: .seconds(locked ? 15 : 1))
+            if Self.screenLocked {
+                store.continueStatus = "Waiting for you to unlock the Mac…"
+                return false
+            }
+            if let unlocked = Self.unlockedAt, Date().timeIntervalSince(unlocked) < Self.settleAfterUnlock {
+                try? await Task.sleep(for: .seconds(1))
+                continue
+            }
+            if manual || Self.secondsSinceTypingOrClicking >= Self.quietSeconds { return true }
+            store.continueStatus = "Waiting for you to stop typing…"
+            try? await Task.sleep(for: .seconds(1))
         }
         return false
     }
@@ -230,7 +260,15 @@ enum ClaudeUI {
         return search { isPrompt($0) }
     }
 
-    static func sendButton() -> AXUIElement? { button(labelled: "send") }
+    static func sendButton() -> AXUIElement? { button(labelled: "send message") ?? button(labelled: "send") }
+
+    /// Brings the Claude app's main window forward.
+    static func raiseWindow() {
+        guard let app = app(), let windows = attribute(app, kAXWindowsAttribute) as? [AXUIElement],
+              let window = windows.first else { return }
+        AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+        NSRunningApplication.runningApplications(withBundleIdentifier: Jump.claudeApp).first?.activate()
+    }
 
     /// The first button whose title or description contains `text` (case-insensitive).
     static func button(labelled text: String) -> AXUIElement? {
@@ -267,8 +305,12 @@ enum ClaudeUI {
     }
 
     /// Breadth-first through the front window, bounded (the app's tree is a few hundred nodes).
+    /// Just after unlocking there can be no focused window yet; with a single window, that one
+    /// is the chat.
     private static func search(_ match: (AXUIElement) -> Bool) -> AXUIElement? {
-        guard let app = app(), let window = element(app, kAXFocusedWindowAttribute) else { return nil }
+        guard let app = app() else { return nil }
+        let windows = attribute(app, kAXWindowsAttribute) as? [AXUIElement] ?? []
+        guard let window = element(app, kAXFocusedWindowAttribute) ?? (windows.count == 1 ? windows.first : nil) else { return nil }
         var queue: [(AXUIElement, Int)] = [(window, 0)]
         var visited = 0
         while !queue.isEmpty, visited < 5000 {

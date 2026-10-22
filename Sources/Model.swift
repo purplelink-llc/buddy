@@ -84,6 +84,9 @@ struct Session: Identifiable {
     /// Times Auto typed "continue" into this chat for its current limit, and when it last did.
     var continueAttempts = 0
     var lastContinueAttempt: Date?
+    /// Auto's last try never reached the chat (screen locked, no Prompt box, another run
+    /// busy). Such tries don't count, and unlocking the Mac retries them at once.
+    var continueSkipped = false
 
     var name: String { title.isEmpty ? project : title }
 }
@@ -174,6 +177,18 @@ final class Store: ObservableObject {
     var exactUsageOn: Bool {
         get { defaults.bool(forKey: "exactUsage") }
         set { defaults.set(newValue, forKey: "exactUsage"); objectWillChange.send(); onRefreshUsage?() }
+    }
+
+    /// Keeps the display awake (so the Mac doesn't idle-lock) while Auto has chats waiting
+    /// for a limit to reset. Off by default: the Mac then stays unlocked while you're away.
+    var keepAwakeOn: Bool {
+        get { defaults.bool(forKey: "keepAwakeForAuto") }
+        set { defaults.set(newValue, forKey: "keepAwakeForAuto"); objectWillChange.send() }
+    }
+
+    /// True while Auto still has something to do: keep-awake holds the display on for this.
+    var autoContinuePending: Bool {
+        autoContinueOn && pausedSessions.contains { $0.pauseReason == .limit && autoDue($0) != nil }
     }
 
     /// Buddy retries chats a dropped connection stopped, once you are back online.
@@ -499,7 +514,7 @@ final class Store: ObservableObject {
     static let autoContinueWindow: TimeInterval = 12 * 3600
 
     /// When Auto should next act on this chat, or nil when it should not.
-    private func autoDue(_ s: Session) -> Date? {
+    func autoDue(_ s: Session) -> Date? {
         guard let reset = s.limitResetsAt, s.continueAttempts < Self.maxContinueAttempts else { return nil }
         let first = reset.addingTimeInterval(Self.continueDelay(for: s.host))
         guard now().timeIntervalSince(first) < Self.autoContinueWindow else { return nil }
@@ -604,6 +619,31 @@ final class Store: ObservableObject {
             due.append(s)
         }
         if !due.isEmpty { onRetry?(due) }
+    }
+
+    /// The typer could not reach this chat (locked screen, no Prompt box, busy): the try
+    /// doesn't count against Auto's three, and the next one comes after the usual gap.
+    func continueSkipped(_ id: String) {
+        guard var s = sessions[id], s.mood == .paused, s.pauseReason == .limit else { return }
+        s.continueAttempts = max(0, s.continueAttempts - 1)
+        s.continueSkipped = true
+        sessions[id] = s
+        scheduleLimitTimers()
+    }
+
+    /// The Mac was just unlocked: chats whose last try was skipped are due again now.
+    func screenUnlocked() {
+        var any = false
+        for (id, var s) in sessions where s.continueSkipped && s.mood == .paused {
+            s.continueSkipped = false
+            s.lastContinueAttempt = nil
+            sessions[id] = s
+            any = true
+        }
+        guard any else { return }
+        Log.note("Mac unlocked: retrying chats Auto could not reach")
+        runAutoContinue()
+        scheduleLimitTimers()
     }
 
     /// Hands every still-paused session to the typer ("Continue now", or the timer).

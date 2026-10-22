@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import IOKit.pwr_mgt
 import Network
 import ServiceManagement
 import Sparkle
@@ -23,6 +24,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUStandardUserDriverD
     /// Plan usage: estimated from transcripts (on scanQueue), or exact when opted in.
     let usageScanner = UsageScanner()
     var usageTimer: Timer?
+    /// The last exact-usage problem logged, so the same one isn't logged every 3 minutes.
+    var lastUsageNote: String?
+    /// Holds the display awake while Auto waits (Settings → Keep the Mac awake…).
+    var awakeAssertion: IOPMAssertionID?
+    var storeChanges: AnyCancellable?
     var ui: UIState!
     lazy var inbox = Inbox { [weak self] events in
         MainActor.assumeIsolated { self?.store.apply(events) }
@@ -125,6 +131,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUStandardUserDriverD
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.networkChanged(up) } }
         }
         pathMonitor.start(queue: DispatchQueue(label: "llc.purplelink.Buddy.network", qos: .utility))
+        // Unlocking retries chats Auto could not reach while the screen was locked, after a
+        // few seconds for the Claude app to redraw.
+        DistributedNotificationCenter.default().addObserver(forName: Notification.Name("com.apple.screenIsUnlocked"),
+                                                            object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                Continuer.unlockedAt = Date()
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .seconds(Continuer.settleAfterUnlock + 1))
+                    self?.store.screenUnlocked()
+                    self?.scheduleRetry(after: 1, fresh: true)
+                }
+            }
+        }
+        storeChanges = store.objectWillChange.sink { [weak self] in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.updateKeepAwake() } }
+        }
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification,
                                                           object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.scheduleRetry(after: 15, fresh: true) }
@@ -163,12 +185,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUStandardUserDriverD
                         switch await ExactUsage.fetch() {
                         case .success(let reading):
                             self.store.usage = reading
+                            self.lastUsageNote = nil
                         case .failure(let failure):
                             var fallback = local
                             fallback.note = failure.message
                             fallback.needsSignIn = failure.signInHelps
                             self.store.usage = fallback
-                            Log.note("exact usage unavailable: \(failure.message)")
+                            if failure.message != self.lastUsageNote {
+                                Log.note("exact usage unavailable: \(failure.message)")
+                                self.lastUsageNote = failure.message
+                            }
                         }
                     }
                 }
@@ -191,6 +217,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUStandardUserDriverD
         }
         NSApp.activate()
         settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    /// While keep-awake is on and Auto has chats waiting, hold the display awake so the Mac
+    /// doesn't idle-lock (Buddy can't type into a locked Mac). Released as soon as they're done.
+    private func updateKeepAwake() {
+        let want = store.keepAwakeOn && store.autoContinuePending
+        if want, awakeAssertion == nil {
+            var id = IOPMAssertionID(0)
+            let reason = "Buddy is waiting to continue chats paused by a usage limit" as CFString
+            if IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
+                                           IOPMAssertionLevel(kIOPMAssertionLevelOn), reason, &id) == kIOReturnSuccess {
+                awakeAssertion = id
+                Log.note("keeping the Mac awake until paused chats continue")
+            }
+        } else if !want, let id = awakeAssertion {
+            IOPMAssertionRelease(id)
+            awakeAssertion = nil
+            Log.note("letting the Mac sleep again")
+        }
     }
 
     private func networkChanged(_ up: Bool) {
