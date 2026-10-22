@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.0
+
+### Changed
+- Auto and **Continue now** type in the background. Buddy opens the chat (the Claude app comes forward for about a second to switch to it), gives the keyboard straight back to the app you were in, and sends "continue" to the Claude app alone. What you type keeps going to your app, and Buddy's keys can't land anywhere else. If that doesn't send, Buddy falls back to typing with the Claude app in front, as before.
+- Before typing, Buddy checks that the window shows the chat it means to continue.
+
+### Fixed
+- Buddy never sends or deletes text you left unsent in a chat's message box. A chat with a draft is left alone and tried again later; a "continue" left over from an earlier try is cleared first. Before, Buddy's "continue" was added to the end of whatever was in the box and sent with it.
+
 ## 0.8.0
 
 ### Fixed
