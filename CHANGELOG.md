@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.1
+
+### Fixed
+- Exact usage no longer asks for your Mac's password again and again. Claude Code rewrites its keychain sign-in each time it renews it, which removed Buddy's permission, so macOS asked again every few hours. Buddy now reads it through `/usr/bin/security`, the tool Claude Code stores it with, which is always allowed.
+- Exact usage no longer drops back to the estimate every day. Claude Code's sign-in lasts about eight hours and only the `claude` command renews it, which the Claude app's chats don't do. When it has expired, Buddy runs `claude doctor` (a one-second health check that uses none of your plan) to renew it, then asks again.
+- The README's description of what Buddy reads is clearer.
+
 ## 0.9.0
 
 ### Changed

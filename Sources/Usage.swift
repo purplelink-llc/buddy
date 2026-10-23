@@ -1,6 +1,5 @@
 import AppKit
 import Foundation
-import Security
 
 /// Plan usage shown at the top of Buddy's list: the 5-hour session window and, when exact,
 /// the weekly window.
@@ -176,7 +175,7 @@ enum ExactUsage {
         var message: String {
             switch self {
             case .noSignIn: return "No Claude Code sign-in found. Run claude in Terminal and sign in."
-            case .keychainDenied: return "macOS didn't let Buddy read Claude Code's sign-in. Turn exact usage off and on, then choose Always Allow."
+            case .keychainDenied: return "Buddy couldn't read Claude Code's sign-in from the keychain."
             case .expired: return "Claude Code's sign-in has expired. Run claude in Terminal once to refresh it."
             case .refused(let code): return "Anthropic refused the request (\(code)). Run claude in Terminal once to refresh the sign-in."
             case .unreadable: return "Anthropic's answer was not in the expected shape."
@@ -254,22 +253,29 @@ enum ExactUsage {
         return UsageReading(session: session, week: week, exact: true)
     }
 
-    /// Item not found (or no Claude sign-in in it) is `.noSignIn`; a refused or dismissed
-    /// keychain prompt is `.keychainDenied`, which signing in again would not fix.
+    /// Reads the item through /usr/bin/security, the tool Claude Code itself stores it with.
+    /// Each renewal rewrites the item and resets its access list to that tool alone, so a
+    /// direct keychain read asked for your password again every few hours (2026-10-23); the
+    /// tool is always on the list. Not found (or no Claude sign-in in it) is `.noSignIn`; any
+    /// other failure is `.keychainDenied`. The token stays in memory for this one request.
     private static func signInToken() -> Result<(value: String, expired: Bool), Failure> {
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-                                    kSecAttrService as String: keychainService,
-                                    kSecReturnData as String: true,
-                                    kSecMatchLimit as String: kSecMatchLimitOne]
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        guard status != errSecItemNotFound else { return .failure(.noSignIn) }
-        guard status == errSecSuccess else {
-            Log.note("keychain read of Claude Code's sign-in failed: \(status)")
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        p.arguments = ["find-generic-password", "-s", keychainService, "-w"]
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = FileHandle.nullDevice
+        p.standardInput = FileHandle.nullDevice
+        do { try p.run() } catch { return .failure(.keychainDenied) }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        // 44 is errSecItemNotFound's exit code from the security tool.
+        guard p.terminationStatus != 44 else { return .failure(.noSignIn) }
+        guard p.terminationStatus == 0 else {
+            Log.note("keychain read of Claude Code's sign-in failed: \(p.terminationStatus)")
             return .failure(.keychainDenied)
         }
-        guard let data = item as? Data,
-              let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+        guard let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               let oauth = json["claudeAiOauth"] as? [String: Any],
               let value = oauth["accessToken"] as? String, !value.isEmpty else { return .failure(.noSignIn) }
         let expiresMs = (oauth["expiresAt"] as? NSNumber)?.doubleValue ?? .infinity
@@ -303,6 +309,17 @@ struct ClaudeAccount: Equatable {
         let ok = await run("claude auth logout") != nil
         Log.note(ok ? "signed Claude Code out" : "claude auth logout failed")
         return ok
+    }
+
+    /// Claude Code's access token lasts about eight hours and only the claude command renews
+    /// it, which the Claude app's chats don't do. `claude doctor` (a one-second health check
+    /// that spends no usage) renews it as a side effect. Run from an empty folder so it reads
+    /// no project's settings. True when the command ran; the caller checks the result.
+    static func renewSignIn() async -> Bool {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("buddy-renew", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let quoted = "'" + folder.path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        return await run("cd \(quoted) && claude doctor") != nil
     }
 
     /// Runs one fixed command line; the output when it exits 0 within 20 seconds.

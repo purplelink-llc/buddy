@@ -26,6 +26,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUStandardUserDriverD
     var usageTimer: Timer?
     /// The last exact-usage problem logged, so the same one isn't logged every 3 minutes.
     var lastUsageNote: String?
+    /// When Buddy last asked Claude Code to renew an expired sign-in (at most every 10 minutes).
+    var lastRenewal = Date.distantPast
     /// Holds the display awake while Auto waits (Settings → Keep the Mac awake…).
     var awakeAssertion: IOPMAssertionID?
     var storeChanges: AnyCancellable?
@@ -182,7 +184,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUStandardUserDriverD
                     guard let self else { return }
                     guard exact else { self.store.usage = local; return }
                     Task { @MainActor in
-                        switch await ExactUsage.fetch() {
+                        var result = await ExactUsage.fetch()
+                        if case .failure(.expired) = result, Date().timeIntervalSince(self.lastRenewal) > 600 {
+                            self.lastRenewal = Date()
+                            if await ClaudeAccount.renewSignIn() {
+                                result = await ExactUsage.fetch()
+                                if case .success = result { Log.note("renewed Claude Code's expired sign-in") }
+                                else { Log.note("asked Claude Code to renew its sign-in, still unavailable") }
+                            }
+                        }
+                        switch result {
                         case .success(let reading):
                             self.store.usage = reading
                             self.lastUsageNote = nil
