@@ -34,7 +34,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Usage limits")
                 } footer: {
-                    Text("About a minute after each chat's limit resets, Buddy types \"continue\" into it, and tries again up to three times if it is still paused. Buddy can't type into a locked Mac: it tries again the moment you unlock. Keep awake stops the display from sleeping (so the Mac doesn't lock) only while chats are waiting, which leaves it unlocked while you're away.")
+                    Text("About a minute after each chat's limit resets, Buddy types \"continue\" into it (up to three tries). It can't type into a locked Mac, so it retries when you unlock; keep awake stops the Mac idle-locking while chats wait.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section {
@@ -73,7 +73,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Usage")
                 } footer: {
-                    Text("Off: Buddy estimates session usage from your chats on this Mac (shown with ≈). On: Buddy reads Claude Code's sign-in from your keychain and asks Anthropic every few minutes for exact session and weekly usage. Apart from the daily update check, this is the only time Buddy uses the network.")
+                    Text("Off: an estimate from your chats on this Mac (≈). On: exact session and weekly usage from Anthropic, using Claude Code's sign-in. Besides the daily update check, this is Buddy's only network use.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section("Claude Code") {
@@ -111,8 +111,9 @@ struct SettingsView: View {
             }
             .formStyle(.grouped)
         }
-        // A grouped Form scrolls, so it has no natural height of its own: size the window.
-        .frame(width: 460, height: 900)
+        // A grouped Form scrolls, so it has no natural size of its own: give it a range and let
+        // the window (resizable, size remembered) pick within it.
+        .frame(minWidth: 400, idealWidth: 460, maxWidth: .infinity, minHeight: 280, idealHeight: 560, maxHeight: .infinity)
         .task(id: store.exactUsageOn) { await refreshAccount() }
         .confirmationDialog("Sign Claude Code out on this Mac?", isPresented: $confirmSignOut) {
             Button("Sign Out", role: .destructive) {

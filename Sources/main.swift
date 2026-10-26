@@ -219,11 +219,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUStandardUserDriverD
 
     func showSettings() {
         if settingsWindow == nil {
-            let window = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(store: store, ui: ui)))
+            let host = NSHostingController(rootView: SettingsView(store: store, ui: ui))
+            host.sizingOptions = [.minSize]  // the window keeps the size you give it
+            let window = NSWindow(contentViewController: host)
             window.title = "Buddy Settings"
-            window.styleMask = [.titled, .closable]
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            window.setContentSize(NSSize(width: 460, height: 560))
+            window.contentMinSize = NSSize(width: 400, height: 280)
             window.isReleasedWhenClosed = false
-            window.center()
+            // Remembers the size and place you leave it at (first time: 460 × 560, centred).
+            if !window.setFrameUsingName("BuddySettings") { window.center() }
+            window.setFrameAutosaveName("BuddySettings")
             settingsWindow = window
         }
         NSApp.activate()

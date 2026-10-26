@@ -78,8 +78,8 @@ final class Continuer {
                     store.continueStatus = "Continuing \(index + 1) of \(sessions.count)…"
                     Jump.desktopChat(sessionID: sessionID).perform()
                     borrowedFocus = true
-                    let outcome = await continueOpenChat(sessionID: sessionID, title: current.title,
-                                                         returnTo: previous, tryAgainFirst: tryAgainFirst)
+                    let outcome = await continueOpenChat(sessionID: sessionID, storeID: session.id, title: current.title,
+                                                         tryAgainFirst: tryAgainFirst)
                     if outcome.hasPrefix("sent") { sent += 1 }
                     if outcome.hasPrefix("skipped"), !manual { store.continueSkipped(session.id) }
                     Log.note("continue \(current.name): \(outcome)")
@@ -97,30 +97,14 @@ final class Continuer {
         }
     }
 
-    /// Types into the chat the deep link just opened. First in the background: once the chat
-    /// is showing, hand the keyboard back to the app you were in and post the keys to the
-    /// Claude app's process only, so nothing you type is mixed in and nothing of Buddy's lands
-    /// elsewhere. If that doesn't send, fall back to typing with the Claude app in front.
-    private func continueOpenChat(sessionID: String, title: String, returnTo previous: NSRunningApplication?,
+    /// Types into the chat the deep link just opened, with the Claude app in front. Keys go
+    /// to whatever the app has focused, so Buddy types only after the app reports this chat's
+    /// own message box as focused (on 2026-10-25 keys sent while it was in the background went
+    /// to another chat's box in a split view, or to the attach control, opening the Open
+    /// panel). A send counts only when the chat itself reports the new message.
+    private func continueOpenChat(sessionID: String, storeID: String, title: String,
                                   tryAgainFirst: Bool = false) async -> String {
         try? await Task.sleep(for: .milliseconds(1200))  // let the app switch chats
-        if !tryAgainFirst, let pid = ClaudeUI.pid, let prompt = await waitForPrompt(title: title) {
-            if let previous, previous.bundleIdentifier != Jump.claudeApp { previous.activate() }
-            ClaudeUI.focus(prompt)
-            try? await Task.sleep(for: .milliseconds(200))
-            if let refusal = await Self.makeRoom(in: prompt, pid: pid) { return refusal }
-            await Self.typeText(Self.message, toPid: pid)
-            try? await Task.sleep(for: .milliseconds(400))
-            Self.pressReturn(toPid: pid)
-            try? await Task.sleep(for: .milliseconds(1500))
-            if !ClaudeUI.value(of: prompt).contains(Self.message) { return "sent (in the background)" }
-            // Clear what didn't send (select all, delete: setting the value isn't seen by the
-            // app), then use the foreground path.
-            Self.clearBox(pid: pid)
-            Log.note("background typing did not send; typing with the Claude app in front")
-            Jump.desktopChat(sessionID: sessionID).perform()
-            try? await Task.sleep(for: .milliseconds(1200))
-        }
         if tryAgainFirst {
             for _ in 0..<12 {  // the error card may take a moment to appear
                 if let button = ClaudeUI.button(labelled: "Try again") {
@@ -142,44 +126,62 @@ final class Continuer {
                 ClaudeUI.raiseWindow()
                 try? await Task.sleep(for: .milliseconds(1200))
             }
-            // Accept the box only once it is the same element twice in a row, so a box from
-            // the chat that was open before the switch is not typed into.
-            if let found = ClaudeUI.prompt() {
+            // This chat's box (the one in the pane showing its title), the same element twice
+            // in a row, so a box from the chat that was open before the switch is never used.
+            if let found = ClaudeUI.prompt(inChatTitled: title) {
                 try? await Task.sleep(for: .milliseconds(300))
-                if let again = ClaudeUI.prompt(), CFEqual(found, again) { prompt = again; break }
+                if let again = ClaudeUI.prompt(inChatTitled: title), CFEqual(found, again) { prompt = again; break }
                 continue
             }
             try? await Task.sleep(for: .milliseconds(250))
         }
         guard let prompt else { return "skipped: no Prompt box appeared" }
         guard !Self.screenLocked else { return "skipped: screen locked" }
-        ClaudeUI.focus(prompt)
-        try? await Task.sleep(for: .milliseconds(200))
-        if let pid = ClaudeUI.pid, let refusal = await Self.makeRoom(in: prompt, pid: pid) { return refusal }
-        await Self.typeText(Self.message)
+        guard await Self.putCursor(in: prompt) else { return "skipped: could not put the cursor in the chat's message box" }
+        Self.releaseStuckModifiers()
+        if let refusal = await Self.makeRoom(in: prompt) { return refusal }
+        // One letter first: if it doesn't show up in the box, stop before any other key could
+        // act as a shortcut somewhere else.
+        await Self.typeText(String(Self.message.prefix(1)))
+        try? await Task.sleep(for: .milliseconds(250))
+        guard ClaudeUI.isFocused(prompt), ClaudeUI.value(of: prompt).hasPrefix(String(Self.message.prefix(1))) else {
+            return "skipped: keys did not reach the chat's message box"
+        }
+        await Self.typeText(String(Self.message.dropFirst()))
         try? await Task.sleep(for: .milliseconds(400))  // let the box register the text
+        guard ClaudeUI.isFocused(prompt), ClaudeUI.value(of: prompt).contains(Self.message) else {
+            return "skipped: the text did not land in the chat's message box"
+        }
         Self.pressReturn()
-        try? await Task.sleep(for: .milliseconds(1200))
-        guard ClaudeUI.value(of: prompt).contains(Self.message) else { return "sent" }
-        guard let send = ClaudeUI.sendButton() else { return "typed, but Return did not send and no Send button found" }
-        ClaudeUI.press(send)
-        try? await Task.sleep(for: .milliseconds(800))
-        return ClaudeUI.value(of: prompt).contains(Self.message) ? "typed, but not sent" : "sent with the Send button"
+        if await sendConfirmed(storeID) { return "sent" }
+        if ClaudeUI.value(of: prompt).contains(Self.message), let send = ClaudeUI.sendButton(near: prompt) {
+            ClaudeUI.press(send)
+            if await sendConfirmed(storeID) { return "sent with the Send button" }
+        }
+        // The text left the box but the chat never reported it (its hook may be off): count it
+        // as a try, so Auto doesn't keep typing "continue" into a chat that already got one.
+        if !ClaudeUI.value(of: prompt).contains(Self.message) { return "sent (not confirmed)" }
+        return "skipped: sending was not confirmed"
     }
 
-    /// The open chat's Prompt box, once the window shows this chat (its title, when it has
-    /// one) and the box is the same element twice in a row. Nil after about ten seconds.
-    private func waitForPrompt(title: String) async -> AXUIElement? {
-        for _ in 0..<40 {
-            let showing = ClaudeUI.chatTitle()
-            if title.isEmpty || showing == nil || showing == title, let found = ClaudeUI.prompt() {
-                try? await Task.sleep(for: .milliseconds(300))
-                if let again = ClaudeUI.prompt(), CFEqual(found, again) { return again }
-                continue
-            }
+    /// The chat reports a new message through its hook (Buddy then no longer has it as
+    /// paused). Waits up to eight seconds.
+    private func sendConfirmed(_ storeID: String) async -> Bool {
+        for _ in 0..<32 {
             try? await Task.sleep(for: .milliseconds(250))
+            if store.sessions[storeID]?.mood != .paused { return true }
         }
-        return nil
+        return false
+    }
+
+    /// Focuses the box and waits until the app itself reports it as focused.
+    private static func putCursor(in prompt: AXUIElement) async -> Bool {
+        for _ in 0..<12 {
+            ClaudeUI.focus(prompt)
+            try? await Task.sleep(for: .milliseconds(150))
+            if ClaudeUI.isFocused(prompt) { return true }
+        }
+        return false
     }
 
     /// True once it is safe to type: the screen is unlocked (and has been for a few seconds)
@@ -222,72 +224,70 @@ final class Continuer {
     ]
 
     /// Types `text` into the frontmost app, one key at a time like a person would.
+    /// Each key carries exactly the modifiers given (none, for typing), from a private event
+    /// source. A key event made from the shared system source inherits whatever modifiers
+    /// that state holds, and on 2026-10-25 it held a stuck Command: "continue" became Cmd-C,
+    /// Cmd-O, Cmd-N... and Cmd-U opened the Open panel.
+    private static func post(_ key: CGKeyCode, down: Bool, flags: CGEventFlags = [], character: Character? = nil) {
+        let event = CGEvent(keyboardEventSource: CGEventSource(stateID: .privateState), virtualKey: key, keyDown: down)
+        if let character {
+            var units = Array(String(character).utf16)
+            event?.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
+        }
+        event?.flags = flags
+        event?.post(tap: .cghidEventTap)
+    }
+
+    /// Releases modifiers the system's synthetic key state holds down while the physical
+    /// keyboard doesn't (left there by some app's posted shortcut), so they can't leak into
+    /// anything typed later. Physical keys you are holding are left alone.
+    static func releaseStuckModifiers() {
+        let synthetic = CGEventSource.flagsState(.hidSystemState)
+        let physical = CGEventSource.flagsState(.combinedSessionState)
+        for (flag, key) in [(CGEventFlags.maskCommand, CGKeyCode(55)), (.maskShift, 56), (.maskAlternate, 58), (.maskControl, 59)]
+            where synthetic.contains(flag) && !physical.contains(flag) {
+            let up = CGEvent(keyboardEventSource: CGEventSource(stateID: .hidSystemState), virtualKey: key, keyDown: false)
+            up?.type = .flagsChanged
+            up?.flags = []
+            up?.post(tap: .cghidEventTap)
+            Log.note("released a stuck modifier key (\(key)) before typing")
+        }
+    }
+
     private static func typeText(_ text: String) async {
-        let source = CGEventSource(stateID: .hidSystemState)
         for character in text {
-            var units = Array(String(character).utf16)
-            for down in [true, false] {
-                let event = CGEvent(keyboardEventSource: source, virtualKey: keyCodes[character] ?? 0, keyDown: down)
-                event?.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
-                event?.post(tap: .cghidEventTap)
-            }
+            for down in [true, false] { post(keyCodes[character] ?? 0, down: down, character: character) }
             try? await Task.sleep(for: .milliseconds(25))
-        }
-    }
-
-    /// Like typeText, but delivered only to the process `pid` (the Claude app), whatever is in
-    /// front. Tested 2026-10-22: works with the Claude app in the background; on a locked Mac
-    /// the app drops them, so Buddy never relies on it there.
-    private static func typeText(_ text: String, toPid pid: pid_t) async {
-        let source = CGEventSource(stateID: .privateState)
-        for character in text {
-            var units = Array(String(character).utf16)
-            for down in [true, false] {
-                let event = CGEvent(keyboardEventSource: source, virtualKey: keyCodes[character] ?? 0, keyDown: down)
-                event?.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
-                event?.postToPid(pid)
-            }
-            try? await Task.sleep(for: .milliseconds(25))
-        }
-    }
-
-    private static func pressReturn(toPid pid: pid_t) {
-        let source = CGEventSource(stateID: .privateState)
-        for down in [true, false] {
-            CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: down)?.postToPid(pid)
         }
     }
 
     /// Before typing: an empty box is fine; a leftover "continue" from an earlier try is
     /// cleared; anything else is your unsent text, which Buddy neither sends nor deletes, so
     /// it leaves the chat alone (a skipped try, retried later). Returns that refusal, or nil.
-    private static func makeRoom(in prompt: AXUIElement, pid: pid_t) async -> String? {
+    /// Only called once the box is confirmed focused, so the clear can't reach anything else.
+    private static func makeRoom(in prompt: AXUIElement) async -> String? {
         let draft = ClaudeUI.value(of: prompt).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !draft.isEmpty else { return nil }
         guard draft.lowercased() == message else { return "skipped: the chat's message box has unsent text" }
-        clearBox(pid: pid)
+        guard ClaudeUI.isFocused(prompt) else { return "skipped: could not put the cursor in the chat's message box" }
+        // Cmd-A with Command pressed and released around it (so it can't stay stuck), then Delete.
+        let commandDown = CGEvent(keyboardEventSource: CGEventSource(stateID: .privateState), virtualKey: 55, keyDown: true)
+        commandDown?.type = .flagsChanged
+        commandDown?.flags = .maskCommand
+        commandDown?.post(tap: .cghidEventTap)
+        for down in [true, false] { post(0, down: down, flags: .maskCommand) }
+        let commandUp = CGEvent(keyboardEventSource: CGEventSource(stateID: .privateState), virtualKey: 55, keyDown: false)
+        commandUp?.type = .flagsChanged
+        commandUp?.flags = []
+        commandUp?.post(tap: .cghidEventTap)
+        for down in [true, false] { post(51, down: down) }
         try? await Task.sleep(for: .milliseconds(300))
         return ClaudeUI.value(of: prompt).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? nil : "skipped: could not clear an earlier \"continue\""
     }
 
-    /// Select all, then delete, in the Claude app's focused box.
-    private static func clearBox(pid: pid_t) {
-        let source = CGEventSource(stateID: .privateState)
-        for (key, flags) in [(CGKeyCode(0), CGEventFlags.maskCommand), (CGKeyCode(51), CGEventFlags())] {
-            for down in [true, false] {
-                let event = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: down)
-                event?.flags = flags
-                event?.postToPid(pid)
-            }
-        }
-    }
-
     private static func pressReturn() {
-        let source = CGEventSource(stateID: .hidSystemState)
-        for down in [true, false] {
-            CGEvent(keyboardEventSource: source, virtualKey: 36, keyDown: down)?.post(tap: .cghidEventTap)
-        }
+        for down in [true, false] { post(36, down: down) }
     }
 
     /// Sends "continue" + Return to the Terminal or iTerm2 tab on `tty` (validated by Jump).
@@ -345,19 +345,73 @@ enum ClaudeUI {
         return search { isPrompt($0) }
     }
 
-    static func sendButton() -> AXUIElement? { button(labelled: "send message") ?? button(labelled: "send") }
-
-    static var pid: pid_t? {
-        NSRunningApplication.runningApplications(withBundleIdentifier: Jump.claudeApp).first?.processIdentifier
+    /// The message box of the chat titled `title`: found from the chat's own title button,
+    /// climbing to the nearest pane that holds a box, so a chat open beside it (split view)
+    /// is never used. With no title, only a window with exactly one box qualifies.
+    static func prompt(inChatTitled title: String) -> AXUIElement? {
+        let suffix = ", rename session"
+        guard !title.isEmpty else {
+            let boxes = all(isPrompt)
+            return boxes.count == 1 ? boxes.first : nil
+        }
+        guard let titleButton = search({ el in
+            string(el, kAXRoleAttribute) == kAXButtonRole as String && string(el, kAXDescriptionAttribute) == title + suffix
+        }) else { return nil }
+        var node: AXUIElement? = titleButton
+        for _ in 0..<20 {
+            guard let current = node else { break }
+            if let box = first(in: current, isPrompt) { return box }
+            node = element(current, kAXParentAttribute)
+        }
+        return nil
     }
 
-    /// The title of the chat the window shows (from its "<title>, rename session" button).
-    static func chatTitle() -> String? {
-        let suffix = ", rename session"
-        guard let button = search({ el in
-            string(el, kAXRoleAttribute) == kAXButtonRole as String && string(el, kAXDescriptionAttribute).hasSuffix(suffix)
-        }) else { return nil }
-        return String(string(button, kAXDescriptionAttribute).dropLast(suffix.count))
+    /// True when the Claude app reports `el` as its focused element.
+    static func isFocused(_ el: AXUIElement) -> Bool {
+        guard let app = app(), let focused = element(app, kAXFocusedUIElementAttribute) else { return false }
+        return CFEqual(focused, el)
+    }
+
+    /// The "Send" button in the same pane as the box (exactly "Send": not "Send feedback").
+    static func sendButton(near prompt: AXUIElement) -> AXUIElement? {
+        var node: AXUIElement? = prompt
+        for _ in 0..<8 {
+            guard let current = node else { break }
+            if let send = first(in: current, { el in
+                string(el, kAXRoleAttribute) == kAXButtonRole as String
+                    && (string(el, kAXDescriptionAttribute) == "Send" || string(el, kAXTitleAttribute) == "Send")
+            }) { return send }
+            node = element(current, kAXParentAttribute)
+        }
+        return nil
+    }
+
+    /// Breadth-first under `root`, bounded.
+    private static func first(in root: AXUIElement, _ match: (AXUIElement) -> Bool) -> AXUIElement? {
+        var queue = [root]
+        var visited = 0
+        while !queue.isEmpty, visited < 3000 {
+            let el = queue.removeFirst()
+            visited += 1
+            if match(el) { return el }
+            queue += attribute(el, kAXChildrenAttribute) as? [AXUIElement] ?? []
+        }
+        return nil
+    }
+
+    /// Every match in the app's windows, bounded.
+    private static func all(_ match: (AXUIElement) -> Bool) -> [AXUIElement] {
+        guard let app = app() else { return [] }
+        var queue = attribute(app, kAXWindowsAttribute) as? [AXUIElement] ?? []
+        var found: [AXUIElement] = []
+        var visited = 0
+        while !queue.isEmpty, visited < 8000 {
+            let el = queue.removeFirst()
+            visited += 1
+            if match(el) { found.append(el) }
+            queue += attribute(el, kAXChildrenAttribute) as? [AXUIElement] ?? []
+        }
+        return found
     }
 
     /// Brings the Claude app's main window forward.

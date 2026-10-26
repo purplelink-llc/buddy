@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.10.0
+
+### Fixed
+- Auto and **Continue now** could open the Claude app's file picker instead of typing "continue". When some app had left a synthetic Command key held down, every key Buddy typed was sent as a shortcut: "continue" became Cmd-C, Cmd-O, Cmd-N… and Cmd-U opened the file picker. Buddy now sends each key with exactly the modifiers it means (none, for typing), releases a stuck modifier first, and stops if the first letter doesn't show up in the box.
+- "Sent" now means the chat itself reported the new message. Before, an empty box counted as sent even when the text had gone somewhere else.
+- The Send fallback presses the chat's own Send button, not another button whose name contains "send".
+
+### Changed
+- Buddy types with the Claude app in front again, and only after the app reports that chat's own message box as focused. Typing in the background (0.9.0) can't control which box gets the keys: with two chats side by side, "continue" could land in the other one. Buddy still puts you back in the app you were using afterwards.
+- Buddy finds a chat's message box from the chat's own title, so with two chats side by side it always types into the right one.
+- Settings opens shorter (460 × 560), can be resized to any size, and remembers the size and place you leave it at.
+
 ## 0.9.1
 
 ### Fixed
