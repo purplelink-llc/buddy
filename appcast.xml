@@ -3,13 +3,13 @@
   <channel>
     <title>Buddy</title>
     <item>
-      <title>Buddy 0.10.0</title>
-      <pubDate>Mon, 26 Oct 2026 07:57:17 -0400</pubDate>
-      <sparkle:version>15</sparkle:version>
-      <sparkle:shortVersionString>0.10.0</sparkle:shortVersionString>
+      <title>Buddy 0.10.1</title>
+      <pubDate>Sat, 31 Oct 2026 21:54:21 -0400</pubDate>
+      <sparkle:version>16</sparkle:version>
+      <sparkle:shortVersionString>0.10.1</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-      <sparkle:releaseNotesLink>https://github.com/purplelink-llc/buddy/releases/tag/v0.10.0</sparkle:releaseNotesLink>
-      <enclosure url="https://github.com/purplelink-llc/buddy/releases/download/v0.10.0/Buddy.zip" sparkle:edSignature="PcIFte7iCMikAMM4hSVt6OuSRycWAESf4UMMzgi+chDslmGR3TtPMTQYCsX+7oj4eFmS9yg74naNzgt38KVmAw==" length="3098391" type="application/octet-stream"/>
+      <sparkle:releaseNotesLink>https://github.com/purplelink-llc/buddy/releases/tag/v0.10.1</sparkle:releaseNotesLink>
+      <enclosure url="https://github.com/purplelink-llc/buddy/releases/download/v0.10.1/Buddy.zip" sparkle:edSignature="kmy9OqxcRO/cgy86DlJNPEqcMO7sya2XySOAbstG8rECj+rlQTQ8mQ4VlsK6xV5Et4ZkcdDJc7v8viY2138lDw==" length="3106397" type="application/octet-stream"/>
     </item>
   </channel>
 </rss>
