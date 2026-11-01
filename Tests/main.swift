@@ -1,8 +1,8 @@
 import Foundation
 
 // Logic tests for Buddy. Run with ./build.sh test, which points HOME at a throwaway folder.
-// Nothing here opens windows, plays sounds or switches apps: sounds and the clock are
-// injected, and Jump is only asked for its target, never performed.
+// Nothing here opens windows, plays sounds, switches apps or posts keys: sounds, the clock and
+// the Mac (ContinueSystem) are injected, and Jump is only asked for its target, never performed.
 
 var failures = 0
 var checks = 0
@@ -540,6 +540,11 @@ if let hook = ProcessInfo.processInfo.environment["BUDDY_HOOK"] {
 } else {
     print("skipped hook binary tests (BUDDY_HOOK not set)")
 }
+
+// MARK: auto-continue safety rules (Tests/ContinueTests.swift), on the main actor with a fake clock
+var continueTestsDone = false
+Task { @MainActor in await continueTests(); continueTestsDone = true }
+while !continueTestsDone { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
 
 print(failures == 0 ? "all \(checks) checks passed" : "\(failures) of \(checks) checks failed")
 exit(failures == 0 ? 0 : 1)

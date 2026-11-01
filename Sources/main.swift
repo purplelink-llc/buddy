@@ -138,11 +138,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUStandardUserDriverD
         DistributedNotificationCenter.default().addObserver(forName: Notification.Name("com.apple.screenIsUnlocked"),
                                                             object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
-                Continuer.unlockedAt = Date()
-                Task { @MainActor [weak self] in
-                    try? await Task.sleep(for: .seconds(Continuer.settleAfterUnlock + 1))
-                    self?.store.screenUnlocked()
-                    self?.scheduleRetry(after: 1, fresh: true)
+                _ = Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    await self.continuer.screenDidUnlock()
+                    self.scheduleRetry(after: 1, fresh: true)
                 }
             }
         }

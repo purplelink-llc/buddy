@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.1
+
+### Fixed
+- Auto and **Continue now** stop typing the moment the Claude app leaves the front or the Mac locks, even partway through the word. Before, those checks ran only before typing started, so switching apps mid-word could send the rest of "continue" (and the Return) to the app you switched to.
+- Buddy presses Return only when the chat's message box holds exactly "continue". If you typed into that box while Buddy was typing, it used to send your text along with it; now it leaves the box alone and tries again later.
+
 ## 0.10.0
 
 ### Fixed
