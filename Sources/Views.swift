@@ -197,7 +197,9 @@ struct PillView: View {
             HStack(spacing: 0) {
                 Guy(mood: store.overallMood, size: ui.geometry.barHeight * 0.66, urgent: store.peek != nil)
                     .padding(.leading, 12)
-                if ui.showsUsage, let s = store.usage?.session { usageBadge(s, approx: store.usage?.exact == false) }
+                if let shown = store.shownUsage {
+                    usageBadge(shown.window, week: shown.isWeek, exact: store.usage?.exact == true)
+                }
                 Spacer(minLength: 0)
             }
             .frame(width: ui.earWidth)
@@ -214,7 +216,14 @@ struct PillView: View {
             .frame(width: ui.earWidth)
         }
         .contentShape(Rectangle())
-        .onTapGesture { store.openTop() }
+        .onTapGesture {
+            // Option-click flips the notch between the session and the week; a plain click opens the top chat.
+            if NSEvent.modifierFlags.contains(.option), store.exactUsageOn {
+                store.notchWindow = store.notchWindow == .week ? .session : .week
+            } else {
+                store.openTop()
+            }
+        }
         .help(store.ordered.isEmpty ? "" : "Click to go to the session that needs you most")
     }
 
@@ -253,14 +262,24 @@ struct PillView: View {
         }
     }
 
-    /// Session usage beside the Guy, always on: percent over the reset time ("≈65%" / "2:20").
-    private func usageBadge(_ w: UsageReading.Window, approx: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text("\(approx ? "≈" : "")\(Int(w.percent.rounded()))%")
-                .font(.system(size: 11, weight: .semibold).monospacedDigit())
-                .foregroundStyle(Self.usageTint(w.percent))
-            if let reset = w.resetsAt, reset > Date() {
-                Text(reset.formatted(.dateTime.hour(.defaultDigits(amPM: .omitted)).minute()))
+    /// Usage beside the Guy, always on: the session ("≈65%") or, when chosen, the week ("W 41%"), over the pace
+    /// ("→130%", orange when it would run out first; exact readings only) or else the reset ("2:20", "Thu").
+    private func usageBadge(_ w: UsageReading.Window, week: Bool, exact: Bool) -> some View {
+        let pace = exact ? self.pace(w, week: week) : nil
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 2) {
+                if week { Text("W").foregroundStyle(.secondary) }
+                Text("\(exact ? "" : "≈")\(Int(w.percent.rounded()))%").foregroundStyle(Self.usageTint(w.percent))
+            }
+            .font(.system(size: 11, weight: .semibold).monospacedDigit())
+            if let pace {
+                (pace.runsOutAt != nil ? Text(Image(systemName: "exclamationmark.triangle.fill")).font(.system(size: 7)) + Text(" ") : Text(""))
+                    + Text("→\(Int(pace.projected.rounded()))%")
+                    .font(.system(size: 9, weight: .semibold).monospacedDigit())
+                    .foregroundColor(pace.runsOutAt != nil ? .orange : .secondary)
+            } else if let reset = w.resetsAt, reset > Date() {
+                Text(week ? reset.formatted(.dateTime.weekday(.abbreviated))
+                          : reset.formatted(.dateTime.hour(.defaultDigits(amPM: .omitted)).minute()))
                     .font(.system(size: 9, weight: .medium).monospacedDigit())
                     .foregroundStyle(.secondary)
             }
@@ -270,7 +289,26 @@ struct PillView: View {
         // The left ear is 84 pt: 12 + the Guy + this, clear of the camera.
         .frame(maxWidth: ui.earWidth - 12 - ui.geometry.barHeight * 0.66 - 12, alignment: .leading)
         .padding(.leading, 5)
-        .help(store.usage?.exact == true ? "Session usage (exact) and when it resets" : "Estimated session usage and when it resets")
+        .help(badgeHelp(w, week: week, exact: exact, pace: pace))
+    }
+
+    /// The pace for a window: the week by your usual hours once they are learned, else by the time left.
+    private func pace(_ w: UsageReading.Window, week: Bool, habits useHabits: Bool = true) -> UsagePace? {
+        let now = Date()
+        if week, useHabits, let habits = store.habits,
+           let p = UsagePace.weekPace(percent: w.percent, resetsAt: w.resetsAt, now: now, habits: habits) { return p }
+        return UsagePace.pace(percent: w.percent, resetsAt: w.resetsAt,
+                              length: week ? UsageReading.weekLength : UsageReading.sessionLength, now: now)
+    }
+
+    private func badgeHelp(_ w: UsageReading.Window, week: Bool, exact: Bool, pace: UsagePace?) -> String {
+        var text = week ? "Week: \(Int(w.percent.rounded()))% used."
+                        : (exact ? "Session: \(Int(w.percent.rounded()))% used." : "Estimated session usage, about \(Int(w.percent.rounded()))%.")
+        if let pace, let reset = w.resetsAt { text += " " + pace.sentence(resetsAt: reset, weekly: week) }
+        if week, let budget = UsagePace.dailyBudget(percent: w.percent, resetsAt: w.resetsAt, now: Date()) { text += " " + budget }
+        if store.exactUsageOn { text += " Option-click to switch between the session and the week." }
+        if !week, store.notchWindow == .week { text += " Weekly usage unavailable, showing the session." }
+        return text
     }
 
     /// Counts down beside the notch: purple to a limit that has chats paused, else to the
@@ -382,32 +420,81 @@ struct PillView: View {
         .padding(.bottom, 6)
     }
 
-    /// Plan usage at the top of the list. "≈" marks Buddy's local estimate.
+    /// Plan usage at the top of the list, one full-width line per window. "≈" marks Buddy's local estimate.
     @ViewBuilder private var usageRow: some View {
         if let u = store.usage, u.session != nil || u.week != nil {
-            HStack(spacing: 16) {
+            VStack(spacing: 0) {
                 if let s = u.session { meter("Session", s, approx: !u.exact, weekly: false) }
                 if let w = u.week { meter("Week", w, approx: false, weekly: true) }
-                Spacer(minLength: 0)
+                if let o = u.opusWeek { meter("Opus", o, approx: false, weekly: true, habits: false) }
+                if u.exact, let reset = u.week?.resetsAt {
+                    WeekStrip(data: store.habitData, profile: store.habits?.profile,
+                              windowStart: reset.addingTimeInterval(-UsageReading.weekLength),
+                              caption: UsagePace.dailyBudget(percent: u.week?.percent ?? 0, resetsAt: reset, now: Date(), short: true),
+                              help: UsagePace.dailyBudget(percent: u.week?.percent ?? 0, resetsAt: reset, now: Date()))
+                        .frame(height: UIState.stripHeight)
+                }
             }
             .padding(.horizontal, 18)
-            .frame(height: UIState.usageHeight)
-            .help(u.exact ? "Exact usage from Anthropic" : "Estimated from your chats on this Mac (Settings → Usage for exact numbers)")
+            .padding(.vertical, UIState.usagePadding)
+            .frame(height: ui.usageSpace)
         }
     }
 
-    private func meter(_ label: String, _ w: UsageReading.Window, approx: Bool, weekly: Bool) -> some View {
+    /// Label, bar, percent, pace and reset in fixed columns. The bar's tick marks how much of the window's time has
+    /// passed: fill beyond the tick is use ahead of an even pace.
+    private func meter(_ label: String, _ w: UsageReading.Window, approx: Bool, weekly: Bool, habits: Bool = true) -> some View {
         let tint: Color = w.percent >= 90 ? .red : w.percent >= 70 ? .orange : Mood.working.color
-        return HStack(spacing: 6) {
-            Text(label).font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
-            ProgressView(value: min(max(w.percent, 0), 100), total: 100).progressViewStyle(.linear).tint(tint).frame(width: 56)
+        let length = weekly ? UsageReading.weekLength : UsageReading.sessionLength
+        let reset = w.resetsAt.flatMap { $0 > Date() ? $0 : nil }
+        let timeShare = reset.map { min(1, max(0, (length - $0.timeIntervalSinceNow) / length)) }
+        let pace = approx ? nil : self.pace(w, week: weekly, habits: habits)
+        let unsure = (pace?.band ?? 0) > 15
+        return HStack(spacing: 8) {
+            Text(label)
+                .font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                .frame(width: 46, alignment: .leading)
+            UsageBar(percent: w.percent, tint: tint, timeShare: timeShare)
+                .frame(height: 9)
             Text("\(approx ? "≈" : "")\(Int(w.percent.rounded()))%")
+                .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                .frame(width: 38, alignment: .trailing)
+            Text(pace.map { "→\(Int($0.projected.rounded()))%" } ?? "")
                 .font(.system(size: 10, weight: .semibold).monospacedDigit())
-            if let reset = w.resetsAt, reset > Date() {
-                Text(weekly ? reset.formatted(.dateTime.weekday(.abbreviated).hour()) : reset.formatted(date: .omitted, time: .shortened))
-                    .font(.system(size: 10)).foregroundStyle(.tertiary)
+                .foregroundStyle(pace?.runsOutAt != nil ? Color.orange : Color.secondary)
+                .opacity(unsure ? 0.75 : 1)
+                .frame(width: 40, alignment: .leading)
+            // When the window would run out before it resets, this column says when (orange), else when it resets.
+            if let out = pace?.runsOutAt {
+                // Not color alone: a warning sign before the run-out time.
+                (Text(Image(systemName: "exclamationmark.triangle.fill")).font(.system(size: 8))
+                 + Text(" out " + (weekly ? out.formatted(.dateTime.weekday(.abbreviated).hour()) : out.formatted(date: .omitted, time: .shortened))))
+                    .font(.system(size: 10, weight: .semibold).monospacedDigit()).foregroundStyle(.orange)
+                    .frame(width: 84, alignment: .trailing)
+            } else {
+                Text(reset.map { weekly ? $0.formatted(.dateTime.weekday(.abbreviated).hour()) : $0.formatted(date: .omitted, time: .shortened) } ?? "")
+                    .font(.system(size: 10).monospacedDigit()).foregroundStyle(.tertiary)
+                    .frame(width: 84, alignment: .trailing)
             }
         }
+        .lineLimit(1)
+        .frame(height: UIState.usageRowHeight)
+        .help(meterHelp(label, w, approx: approx, weekly: weekly, pace: pace, reset: reset))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(meterHelp(label, w, approx: approx, weekly: weekly, pace: pace, reset: reset))
+    }
+
+    private func meterHelp(_ label: String, _ w: UsageReading.Window, approx: Bool, weekly: Bool, pace: UsagePace?,
+                           reset: Date?) -> String {
+        var text = "\(label): \(approx ? "about " : "")\(Int(w.percent.rounded()))% used"
+        if let reset { text += ", resets " + (weekly ? reset.formatted(.dateTime.weekday(.wide).hour().minute())
+                                                      : reset.formatted(date: .omitted, time: .shortened)) }
+        text += "."
+        if let pace, let reset { text += " " + pace.sentence(resetsAt: reset, weekly: weekly) }
+        if weekly, let budget = UsagePace.dailyBudget(percent: w.percent, resetsAt: reset, now: Date()) { text += " " + budget }
+        if approx { text += " Estimated from your chats on this Mac (Settings → Usage for exact numbers)." }
+        text += " The tick marks how much of the window's time has passed."
+        return text
     }
 
     @ViewBuilder private var rows: some View {
@@ -511,8 +598,92 @@ struct PillView: View {
     @ViewBuilder private var menu: some View {
         Button("Settings…") { ui.openSettings?() }
         Button("Clear Finished Sessions") { store.clearFinished() }
+        if store.exactUsageOn {
+            Toggle("Show Weekly Usage in the Notch", isOn: Binding(
+                get: { store.notchWindow == .week }, set: { store.notchWindow = $0 ? .week : .session }))
+        }
+        Button("Forget Usage Habits") { store.onForgetHabits?() }
         Divider()
         Button("Quit Buddy") { NSApp.terminate(nil) }
+    }
+}
+
+/// The week in seven 24-hour slots from its start: this Mac's use each day (bars) against your usual day (outline,
+/// once the habits are learned), on one scale; today's usual is the use up to now. Letters are each slot's weekday.
+private struct WeekStrip: View {
+    let data: HabitData?
+    let profile: HabitProfile?
+    let windowStart: Date
+    let caption: String?
+    let help: String?
+
+    var body: some View {
+        let now = Date()
+        let actual = data?.slots(windowStart: windowStart) ?? Array(repeating: 0, count: 7)
+        let usual: [Double] = (0..<7).map { i in
+            guard let profile else { return 0 }
+            let a = windowStart.addingTimeInterval(Double(i) * 86400), b = a.addingTimeInterval(86400)
+            return profile.expected(from: a, to: now >= a && now < b ? now : b)   // today: the usual use up to now
+        }
+        let top = max(1, (actual + usual).max() ?? 1)
+        let today = Int(floor(now.timeIntervalSince(windowStart) / 86400))
+        // Columns line up with the meters above: the label, then the bars where the meter bars start.
+        return HStack(alignment: .center, spacing: 8) {
+            Text("Days").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                .frame(width: 46, alignment: .leading)
+            HStack(alignment: .bottom, spacing: 6) {
+                ForEach(0..<7, id: \.self) { i in
+                    VStack(spacing: 2) {
+                        ZStack(alignment: .bottom) {
+                            RoundedRectangle(cornerRadius: 2).fill(Color.white.opacity(0.06))
+                            if usual[i] > 0 {
+                                RoundedRectangle(cornerRadius: 2).stroke(Color.white.opacity(0.35), lineWidth: 1)
+                                    .frame(height: max(2, 18 * usual[i] / top))
+                            }
+                            RoundedRectangle(cornerRadius: 2).fill(Mood.working.color.opacity(i > today ? 0.25 : 0.9))
+                                .frame(height: actual[i] > 0 ? max(2, 18 * actual[i] / top) : 0)
+                        }
+                        .frame(height: 18)
+                        .overlay(i == today ? RoundedRectangle(cornerRadius: 2).stroke(Color.white.opacity(0.6), lineWidth: 1) : nil)
+                        Text(windowStart.addingTimeInterval(Double(i) * 86400).formatted(.dateTime.weekday(.narrow)))
+                            .font(.system(size: 8, weight: .medium)).foregroundStyle(.tertiary)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+            }
+            .frame(width: 168)
+            Spacer(minLength: 8)
+            if let caption {
+                Text(caption).font(.system(size: 10).monospacedDigit()).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+            }
+        }
+        .help((help.map { $0 + " " } ?? "") + "Bars: this Mac's use each day of the week; outlines: your usual day.")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("This week by day on this Mac. " + (help ?? ""))
+    }
+}
+
+/// A thin usage bar with a tick at the share of the window's time that has passed.
+private struct UsageBar: View {
+    let percent: Double
+    let tint: Color
+    let timeShare: Double?
+
+    var body: some View {
+        GeometryReader { g in
+            let w = g.size.width
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.white.opacity(0.14)).frame(height: 5)
+                Capsule().fill(tint).frame(width: max(5, w * min(max(percent, 0), 100) / 100), height: 5)
+                if let t = timeShare {
+                    Rectangle().fill(Color.white.opacity(0.75)).frame(width: 1.5, height: 9)
+                        .offset(x: min(max(0, w * t - 0.75), w - 1.5))
+                }
+            }
+            .frame(height: g.size.height)
+        }
+        .accessibilityElement()
+        .accessibilityLabel("\(Int(percent.rounded())) percent used")
     }
 }
 

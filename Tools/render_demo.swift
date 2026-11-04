@@ -16,9 +16,10 @@ func event(_ json: String, at date: Date = Date()) -> HookEvent {
 
 @MainActor
 func render(_ name: String, height: CGFloat, expanded: Bool, _ events: [HookEvent], autoOn: Bool = false,
-            usage: UsageReading? = nil) {
+            usage: UsageReading? = nil, week: Bool = false) {
     let defaults = UserDefaults(suiteName: "buddy-demo-\(UUID().uuidString)")!
     defaults.set(autoOn, forKey: "autoTypeContinue")
+    if week { defaults.set("week", forKey: "notchWindow") }
     let store = Store(defaults: defaults, sound: { _ in })
     store.apply(events)
     store.usage = usage
@@ -99,6 +100,17 @@ MainActor.assumeIsolated {
         event(#"{"hook_event_name":"UserPromptSubmit","session_id":"w","cwd":"/Users/me/Code/acme","prompt":"go"}"#),
     ])
     render("collapsed-limit", height: 70, expanded: false, limitEvents)
+
+    // Exact usage with pace (docs/designs/weekly-usage-pace.md): the session 4 h into its window at 62% (→78%),
+    // the week 4 days in at 74% (→130%, runs out first).
+    var paced = UsageReading(session: .init(percent: 62, resetsAt: now.addingTimeInterval(3600)),
+                             week: .init(percent: 74, resetsAt: now.addingTimeInterval(3 * 86400)), exact: true)
+    paced.opusWeek = .init(percent: 35, resetsAt: now.addingTimeInterval(3 * 86400))
+    let working = [event(#"{"hook_event_name":"UserPromptSubmit","session_id":"w","cwd":"/Users/me/Code/acme","prompt":"go"}"#)]
+    render("list-pace", height: 210, expanded: true, working, usage: paced)
+    render("collapsed-week", height: 70, expanded: false, working, usage: paced, week: true)
+    render("collapsed-week-calm", height: 70, expanded: false, working, usage: UsageReading(
+        session: paced.session, week: .init(percent: 31, resetsAt: now.addingTimeInterval(3 * 86400)), exact: true), week: true)
 
     // Collapsed with the always-on usage readout beside the Guy, while two chats work.
     let usage = UsageReading(session: .init(percent: 64, resetsAt: now.addingTimeInterval(2 * 3600 + 20 * 60)), week: nil, exact: false)

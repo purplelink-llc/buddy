@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.11.0
+
+### Added
+- **Weekly usage in the notch.** Right-click the pill and choose Show Weekly Usage in the Notch (or Option-click it) to see the week ("W 41%") instead of the 5-hour session. Needs exact usage from Anthropic.
+- **Pace.** Under the percent, "→130%" says where the window ends up by its reset at the rate so far: orange, with a warning sign, when it would run out first. The open list shows each window on one line with a tick on its bar for how much of the window's time has passed, and "out Thu 6 PM" when it would run out before it resets.
+- **Your usual hours.** Buddy learns from Claude Code on this Mac when you usually work (a small private file, never sent anywhere), so the weekly forecast stops counting nights you never work, never shows less than your burn rate right now, and learns across weeks how much of your limit this Mac uses. Settings shows how much it has learned and how far off its mid-week forecasts have been; Forget Usage Habits clears it.
+- **Days strip and daily budget.** The open list shows the week day by day against your usual day, and how much a day lasts you to the reset at an even pace.
+- **Opus week.** When your plan has a separate weekly Opus limit, it gets its own row.
+- **Heads-up (off by default).** One notification a week when even the low end of the forecast runs out more than a day before the week resets.
+
 ## 0.10.1
 
 ### Fixed

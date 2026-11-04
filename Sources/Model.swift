@@ -169,6 +169,23 @@ final class Store: ObservableObject {
 
     /// Plan usage for the row at the top of the list (estimated, or exact when opted in).
     @Published var usage: UsageReading?
+    /// Usage habits for the weekly pace, once Buddy has learned 3 weeks of this Mac's hours (Habits.swift).
+    @Published var habits: HabitInputs?
+    /// The habits file's contents (the week strip, Settings), and the keeper's generation it came from.
+    @Published var habitData: HabitData?
+    var habitGeneration = 0
+    /// Opt-in: one notification a week when the week's pace says it runs out over a day before its reset.
+    var warnWeekEarly: Bool {
+        get { defaults.bool(forKey: "warnWeekEarly") }
+        set { defaults.set(newValue, forKey: "warnWeekEarly"); objectWillChange.send() }
+    }
+    /// The week (reset hour) the heads-up was last sent for; outside the habits file, so Forget does not re-arm it.
+    var warnedWeekReset: Int {
+        get { defaults.integer(forKey: "warnedWeekReset") }
+        set { defaults.set(newValue, forKey: "warnedWeekReset") }
+    }
+    /// Deletes the learned habits (right-click → Forget Usage Habits).
+    var onForgetHabits: (() -> Void)?
     /// Asks the app to re-read usage now (set by the app delegate).
     var onRefreshUsage: (() -> Void)?
 
@@ -177,6 +194,17 @@ final class Store: ObservableObject {
     var exactUsageOn: Bool {
         get { defaults.bool(forKey: "exactUsage") }
         set { defaults.set(newValue, forKey: "exactUsage"); objectWillChange.send(); onRefreshUsage?() }
+    }
+
+    /// Which window the notch pill shows (right-click → Show Weekly Usage in the Notch). Week needs exact usage.
+    var notchWindow: NotchWindow {
+        get { NotchWindow(rawValue: defaults.string(forKey: "notchWindow") ?? "") ?? .session }
+        set { defaults.set(newValue.rawValue, forKey: "notchWindow"); objectWillChange.send() }
+    }
+
+    /// The window the pill shows now (the session when the week can't be shown).
+    var shownUsage: (window: UsageReading.Window, isWeek: Bool)? {
+        usage?.shown(notchWindow, limitPaused: !pausedSessions.isEmpty)
     }
 
     /// Keeps the display awake (so the Mac doesn't idle-lock) while Auto has chats waiting

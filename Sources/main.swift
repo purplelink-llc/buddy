@@ -23,6 +23,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUStandardUserDriverD
     var updater: SPUStandardUpdaterController!
     /// Plan usage: estimated from transcripts (on scanQueue), or exact when opted in.
     let usageScanner = UsageScanner()
+    /// Usage habits for the weekly pace (Habits.swift); on scanQueue only, like the scanner.
+    let habitKeeper = HabitKeeper()
     var usageTimer: Timer?
     /// The last exact-usage problem logged, so the same one isn't logged every 3 minutes.
     var lastUsageNote: String?
@@ -60,6 +62,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUStandardUserDriverD
         ui.automaticUpdates = updater.updater.automaticallyChecksForUpdates
         ui.setAutomaticUpdates = { [weak self] on in self?.updater.updater.automaticallyChecksForUpdates = on }
         store.onRefreshUsage = { [weak self] in self?.refreshUsage() }
+        WeekWarning.setUp()
+        store.onForgetHabits = { [weak self] in
+            guard let self else { return }
+            let keeper = self.habitKeeper
+            self.scanQueue.async {
+                keeper.forget()
+                let g = keeper.generation
+                DispatchQueue.main.async { [weak self] in
+                    MainActor.assumeIsolated {
+                        self?.store.habitGeneration = g
+                        self?.store.habits = nil
+                        self?.store.habitData = nil
+                    }
+                }
+            }
+            Log.note("forgot usage habits")
+        }
         refreshUsage()
         let usageTick = Timer(timeInterval: 180, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.refreshUsage() }
@@ -175,12 +194,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUStandardUserDriverD
     /// estimate with a note when Anthropic or the sign-in is unavailable.
     func refreshUsage() {
         let scanner = usageScanner
+        let keeper = habitKeeper
         let exact = store.exactUsageOn
         scanQueue.async {
             let local = scanner.scan()
+            let habits = keeper.update(scanner: scanner, now: Date())
+            let habitData = keeper.data, generation = keeper.generation
             DispatchQueue.main.async { [weak self] in
                 MainActor.assumeIsolated {
                     guard let self else { return }
+                    // A result from before a Forget never puts the forgotten habits back.
+                    if generation >= self.store.habitGeneration {
+                        self.store.habitGeneration = generation
+                        if self.store.habits != habits { self.store.habits = habits }
+                        if self.store.habitData != habitData { self.store.habitData = habitData }
+                    }
                     guard exact else { self.store.usage = local; return }
                     Task { @MainActor in
                         var result = await ExactUsage.fetch()
@@ -196,6 +224,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUStandardUserDriverD
                         case .success(let reading):
                             self.store.usage = reading
                             self.lastUsageNote = nil
+                            self.scanQueue.async { keeper.observe(reading, now: Date()) }
+                            WeekWarning.check(store: self.store)
                         case .failure(let failure):
                             var fallback = local
                             fallback.note = failure.message

@@ -541,6 +541,230 @@ if let hook = ProcessInfo.processInfo.environment["BUDDY_HOOK"] {
     print("skipped hook binary tests (BUDDY_HOOK not set)")
 }
 
+// MARK: pace and the weekly window (docs/designs/weekly-usage-pace.md)
+do {
+    let h: TimeInterval = 3600, d = 24 * h
+    let now = Date(timeIntervalSince1970: 1_800_000_000)
+    func pace(_ p: Double, elapsed: TimeInterval, length: TimeInterval) -> UsagePace? {
+        UsagePace.pace(percent: p, resetsAt: now.addingTimeInterval(length - elapsed), length: length, now: now)
+    }
+    let even = pace(50, elapsed: 2.5 * h, length: UsageReading.sessionLength)
+    expect(even?.projected == 100 && even?.runsOutAt == nil, "session 50% halfway: 100%, no run-out")
+    let hot = pace(60, elapsed: 2.5 * h, length: UsageReading.sessionLength)
+    let start = now.addingTimeInterval(-2.5 * h)
+    expect(hot?.projected == 120 && hot?.runsOutAt == start.addingTimeInterval(4 * h + 10 * 60),
+           "session 60% at 2.5 h: 120%, runs out 4 h 10 min in, got \(String(describing: hot))")
+    let week = pace(60, elapsed: 3.5 * d, length: UsageReading.weekLength)
+    let weekStart = now.addingTimeInterval(-3.5 * d)
+    expect(week?.projected == 120 && week?.runsOutAt == weekStart.addingTimeInterval(5 * d + 20 * h),
+           "week 60% at 3.5 d: 120%, runs out at 5 d 20 h, got \(String(describing: week))")
+    let light = pace(20, elapsed: 3.5 * d, length: UsageReading.weekLength)
+    expect(light?.projected == 40 && light?.runsOutAt == nil, "a light week: 40%, no run-out")
+    expect(pace(30, elapsed: 59 * 60, length: UsageReading.sessionLength) == nil, "no session pace before an hour")
+    expect(pace(30, elapsed: 23 * h + 59 * 60, length: UsageReading.weekLength) == nil, "no week pace before 24 hours")
+    expect(pace(2, elapsed: 3 * h, length: UsageReading.sessionLength) == nil, "no pace under 3%")
+    expect(pace(100, elapsed: 3 * h, length: UsageReading.sessionLength) == nil, "no pace at the limit")
+    expect(UsagePace.pace(percent: 40, resetsAt: now.addingTimeInterval(-60), length: UsageReading.sessionLength, now: now) == nil,
+           "no pace once the reset has passed")
+    expect(UsagePace.pace(percent: 40, resetsAt: nil, length: UsageReading.sessionLength, now: now) == nil, "no pace without a reset")
+    expect(UsagePace.pace(percent: 40, resetsAt: now.addingTimeInterval(6 * h), length: UsageReading.sessionLength, now: now) == nil,
+           "no pace when the reset does not fit the window (moved or stale)")
+    let out = hot!.runsOutAt!.timeIntervalSinceReferenceDate
+    expect(out.truncatingRemainder(dividingBy: 300) == 0, "the run-out time is rounded to 5 minutes")
+    expect(hot!.sentence(resetsAt: now.addingTimeInterval(2.5 * h), weekly: false).hasPrefix("At this rate, 120% of the limit by the reset"),
+           "the hover sentence says 'at this rate'")
+    expect(light!.sentence(resetsAt: now, weekly: true).hasSuffix("about 60% left then."), "a light week says what is left")
+
+    let s = UsageReading.Window(percent: 30, resetsAt: now.addingTimeInterval(h))
+    let w = UsageReading.Window(percent: 45, resetsAt: now.addingTimeInterval(2 * d))
+    let exact = UsageReading(session: s, week: w, exact: true)
+    expect(exact.shown(.week, limitPaused: false)?.isWeek == true, "week chosen and exact: the week")
+    expect(exact.shown(.session, limitPaused: false)?.isWeek == false, "session chosen: the session")
+    expect(exact.shown(.week, limitPaused: true)?.isWeek == false, "a limit pause shows the session, matching its countdown")
+    expect(UsageReading(session: s, week: nil, exact: true).shown(.week, limitPaused: false)?.isWeek == false, "no week reading: the session")
+    expect(UsageReading(session: s, week: w, exact: false).shown(.week, limitPaused: false)?.isWeek == false, "an estimate never shows a week")
+    expect(UsageReading(session: s, week: .init(percent: 45, resetsAt: nil), exact: true).shown(.week, limitPaused: false)?.isWeek == false,
+           "a week with no reset time: the session")
+    MainActor.assumeIsolated {
+        let st = Store(defaults: UserDefaults(suiteName: "buddy-tests-window-\(UUID().uuidString)")!, sound: { _ in }, now: { now })
+        expect(st.notchWindow == .session, "the pill shows the session by default")
+        st.notchWindow = .week
+        expect(st.notchWindow == .week, "the choice is kept")
+    }
+}
+
+// MARK: usage habits (Sources/Habits.swift; design v3.1). All in UTC so the numbers are exact.
+do {
+    let utc = TimeZone(identifier: "UTC")!
+    let hr: TimeInterval = 3600, dy = 24 * hr
+    let monday = ISO8601DateFormatter().date(from: "2026-11-02T00:00:00Z")!     // a Monday, 00:00 UTC
+    func hourOf(_ d: Date) -> Int { Int(floor(d.timeIntervalSince1970 / hr)) }
+    // Four past weeks of a 9-to-5 weekday habit: 100 weighted tokens an hour, nothing at night or on weekends.
+    var data = HabitData()
+    var past: [Int: Double] = [:]
+    let first = monday.addingTimeInterval(-28 * dy)
+    for h in hourOf(first)..<hourOf(monday) {
+        let parts = Calendar(identifier: .gregorian).dateComponents(in: utc, from: Date(timeIntervalSince1970: Double(h) * hr))
+        let weekday = parts.weekday!, hour = parts.hour!
+        if (2...6).contains(weekday), (9..<17).contains(hour) { past[h] = 100 }
+    }
+    data.set(past, fromHour: hourOf(first), throughHour: hourOf(monday) - 1, offset: { _ in 0 })
+    let profile = HabitProfile(data, now: monday)!
+    expect(HabitProfile.index(hour: hourOf(monday.addingTimeInterval(10 * hr)), offset: 0) == 24 + 10, "Monday 10:00 is hour 34 of the week")
+    expect(HabitProfile.index(hour: hourOf(monday.addingTimeInterval(15 * hr)), offset: -5 * 3600) == 24 + 10,
+           "an hour is placed by its own recorded offset (15:00 UTC at UTC-5 is 10:00 local)")
+    expect(profile.perHour[24 + 10] > 99 && profile.perHour[24 + 3] < 1, "the profile learns busy days and empty nights")
+    let floorValue = 0.02 * (28.0 / 7 * 4000) / Double(28 * 24)
+    expect(abs(profile.perHour[24 + 3] - floorValue) < 1e-9, "an unused hour keeps a small floor")
+    var young = HabitData()
+    young.set([:], fromHour: hourOf(monday) - 20 * 24, throughHour: hourOf(monday) - 1, offset: { _ in 0 })
+    expect(HabitProfile(young, now: monday) == nil, "not ready before 21 days")
+    let reset = monday.addingTimeInterval(7 * dy)
+
+    // A heavy Monday (double the usual) does not project the heavy day onto the rest of the week.
+    var week = data
+    var mon: [Int: Double] = [:]
+    for h in 9..<17 { mon[hourOf(monday) + h] = 200 }
+    week.set(mon, fromHour: hourOf(monday), throughHour: hourOf(monday) + 23, offset: { _ in 0 })
+    let tuesday = monday.addingTimeInterval(dy)
+    let heavy = UsagePace.weekPace(percent: 40, resetsAt: reset, now: tuesday,
+                                   habits: HabitInputs(profile: profile, data: week, recent2h: 0), timeZone: utc)
+    let byTime = UsagePace.pace(percent: 40, resetsAt: reset, length: UsageReading.weekLength, now: tuesday)
+    expect(heavy?.basis == .habits && heavy!.projected > 115 && heavy!.projected < 130 && byTime!.projected > 250,
+           "a heavy Monday: about 122% by habits, not 280% by time; got \(heavy?.projected ?? -1) vs \(byTime?.projected ?? -1)")
+
+    // Working at 3 am, when the habit says nothing happens: the recent burn holds the projection up and sets the run-out.
+    var night = week
+    var tue: [Int: Double] = [:]
+    for h in 9..<17 { tue[hourOf(tuesday) + h] = 100 }
+    tue[hourOf(tuesday) + 25] = 200; tue[hourOf(tuesday) + 26] = 200          // Wed 01:00-03:00
+    night.set(tue, fromHour: hourOf(tuesday), throughHour: hourOf(tuesday) + 26, offset: { _ in 0 })
+    let wed3 = tuesday.addingTimeInterval(27 * hr)                               // Wednesday 03:00
+    let burn = UsagePace.weekPace(percent: 50, resetsAt: reset, now: wed3,
+                                  habits: HabitInputs(profile: profile, data: night, recent2h: 400), timeZone: utc)
+    let calm = UsagePace.weekPace(percent: 50, resetsAt: reset, now: wed3,
+                                  habits: HabitInputs(profile: profile, data: night, recent2h: 0), timeZone: utc)
+    expect(burn != nil && calm != nil && burn!.projected > calm!.projected, "the recent burn raises the projection at 3 am")
+    // This week on this Mac: 1600 + 800 + 400 = 2800 tokens for 50%, so k = 50/2800. The other 50% at the recent burn
+    // (400 tokens per 2 hours) takes 14 hours; the habit alone would not get there before the reset.
+    expect(burn?.runsOutAt == ISO8601DateFormatter().date(from: "2026-11-04T17:00:00Z"),
+           "at that burn it runs out Wednesday 17:00, got \(String(describing: burn?.runsOutAt))")
+    expect(burn!.sentence(resetsAt: reset, weekly: true).hasPrefix("At your usual pace"), "habit mode says so")
+
+    // Use mostly from another device (almost nothing on this Mac this week): no habit pace, the caller uses time.
+    var elsewhere = data
+    elsewhere.set([hourOf(monday) + 10: 1], fromHour: hourOf(monday), throughHour: hourOf(tuesday), offset: { _ in 0 })
+    expect(UsagePace.weekPace(percent: 40, resetsAt: reset, now: tuesday,
+                              habits: HabitInputs(profile: profile, data: elsewhere, recent2h: 0), timeZone: utc) == nil,
+           "too little local use falls back to time")
+    expect(UsagePace.weekPace(percent: 40, resetsAt: reset, now: monday.addingTimeInterval(20 * hr),
+                              habits: HabitInputs(profile: profile, data: week, recent2h: 0), timeZone: utc) == nil,
+           "no week pace in the first 24 hours")
+
+    // The store: set, prune, the edge hour, round trip, a corrupt file, 0600.
+    var store = HabitData()
+    store.set([10: 5], fromHour: 10, throughHour: 12, offset: { _ in -18000 })
+    expect(store.hours["10"] == [5, -18000] && store.hours["11"] == [0, -18000] && store.hours.count == 3,
+           "set writes every hour in range, 0 when empty")
+    store.set([30: 1], fromHour: 30, throughHour: 30, offset: { _ in 0 })
+    store.prune(now: Date(timeIntervalSince1970: (30 + 28 * 24) * hr - 1))
+    expect(store.hours.keys.sorted() == ["30"], "hours older than 28 days are pruned")
+    let habitsURL = scratch.appendingPathComponent("habits/habits.json")
+    let keeper = HabitKeeper(url: habitsURL)
+    keeper.load()
+    keeper.save()
+    let mode = (try? FileManager.default.attributesOfItem(atPath: habitsURL.path)[.posixPermissions] as? NSNumber)?.intValue
+    expect(mode == 0o600, "the habits file is private to you, got \(String(describing: mode))")
+    try! Data("not json".utf8).write(to: habitsURL)
+    let fresh = HabitKeeper(url: habitsURL)
+    fresh.load()
+    expect(fresh.data == HabitData(), "a corrupt habits file starts empty")
+    fresh.forget()
+    expect(!FileManager.default.fileExists(atPath: habitsURL.path), "Forget Usage Habits deletes the file")
+
+    // The scanner's whole hours leave out the partial edge hour after the 3-day cutoff.
+    let projects = scratch.appendingPathComponent("habits/projects/p")
+    try! FileManager.default.createDirectory(at: projects, withIntermediateDirectories: true)
+    let isoF = ISO8601DateFormatter()
+    isoF.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let scanNow = Date()
+    let cutoff = scanNow.addingTimeInterval(-3 * dy)
+    func line(_ id: String, _ out: Int, _ d: Date) -> String {
+        #"{"type":"assistant","timestamp":"\#(isoF.string(from: d))","message":{"id":"\#(id)","model":"claude-sonnet-4-5","usage":{"input_tokens":0,"output_tokens":\#(out),"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}"#
+    }
+    let edge = Date(timeIntervalSince1970: ceil(cutoff.timeIntervalSince1970 / hr) * hr - 1)   // in the partial edge hour
+    let inside = Date(timeIntervalSince1970: ceil(cutoff.timeIntervalSince1970 / hr) * hr + 60)
+    try! ([line("a", 10, edge), line("b", 10, inside), line("b", 30, inside)].joined(separator: "\n") + "\n")
+        .write(to: projects.appendingPathComponent("t.jsonl"), atomically: true, encoding: .utf8)
+    let hscan = UsageScanner(projectsRoot: scratch.appendingPathComponent("habits/projects"))
+    _ = hscan.scan(now: scanNow)
+    let totals = hscan.hourTotals(now: scanNow)
+    let insideHour = Int(floor(inside.timeIntervalSince1970 / hr))
+    expect(totals.fromHour == insideHour && totals.totals.count == 1 && (totals.totals[insideHour] ?? 0) > 0,
+           "whole hours only: the partial edge hour is left out, a streamed reply counts once")
+    let caught = hscan.catchUp(fromHour: insideHour - 5, toHour: insideHour, budget: 5)
+    expect(caught != nil && caught![insideHour] == totals.totals[insideHour], "the catch-up reads the same reply, once")
+}
+
+// MARK: v4.1: learned share, grading, range, budget, Opus, strip (docs/designs/weekly-usage-pace.md)
+do {
+    let hr: TimeInterval = 3600, dy = 24 * hr
+    // An older habits file (no v4 fields) still loads with its hours.
+    let old = #"{"version":1,"scannedThrough":1800000000,"hours":{"500000":[12,0]}}"#
+    let decoded = try? JSONDecoder().decode(HabitData.self, from: Data(old.utf8))
+    expect(decoded?.hours["500000"] == [12, 0] && decoded?.weeks == [] && decoded?.lastWeek == nil,
+           "a habits file from before v4 keeps its hours")
+
+    // A week of local use, then readings through it and into the next week.
+    let reset1 = Date(timeIntervalSince1970: 1_800_000_000 / 3600 * 3600)
+    let start1 = reset1.addingTimeInterval(-7 * dy)
+    var d = HabitData()
+    var tot: [Int: Double] = [:]
+    for h in Int(start1.timeIntervalSince1970 / hr)..<Int(reset1.timeIntervalSince1970 / hr) { tot[h] = 10 }   // 1680 tokens
+    d.set(tot, fromHour: Int(start1.timeIntervalSince1970 / hr), throughHour: Int(reset1.timeIntervalSince1970 / hr) - 1, offset: { _ in 0 })
+    d.scannedThrough = reset1.timeIntervalSince1970 + hr
+    d.observe(percent: 20, resetsAt: reset1, now: start1.addingTimeInterval(2.5 * dy), projected: 70)
+    d.observe(percent: 50, resetsAt: reset1, now: start1.addingTimeInterval(4.2 * dy), projected: 95)
+    d.observe(percent: 55, resetsAt: reset1, now: start1.addingTimeInterval(4.9 * dy), projected: 99)      // day 4 already kept
+    d.observe(percent: 80, resetsAt: reset1, now: start1.addingTimeInterval(6.5 * dy), projected: 85)
+    d.observe(percent: 84, resetsAt: reset1.addingTimeInterval(1200), now: reset1.addingTimeInterval(-2 * hr), projected: 84) // jitter: same week
+    expect(d.projections == ["2": 70, "4": 95, "6": 85] && d.weeks.isEmpty, "first projection at days 2, 4 and 6; jitter is the same week")
+    let reset2 = reset1.addingTimeInterval(7 * dy)
+    d.observe(percent: 1, resetsAt: reset2, now: reset1.addingTimeInterval(hr), projected: nil)
+    expect(d.weeks.count == 1 && d.weeks[0][1] == 84 && d.weeks[0][2] == 1680, "the week ends when a later reset arrives")
+    expect(Array(d.weeks[0][3...]) == [14, 11, 1], "graded by lead time: |70-84|, |95-84|, |85-84|")
+    d.observe(percent: 2, resetsAt: reset2, now: reset1.addingTimeInterval(2 * hr), projected: nil)
+    expect(d.weeks.count == 1 && d.projections.isEmpty, "the same reset again changes nothing")
+    expect(abs(d.learnedK! - 84.0 / 1680) < 1e-12, "the learned share: percent per local token")
+    expect(d.band(elapsedDays: 4.5) == (20 * 2 + 11) / 3, "one graded week moves the range a third of the way: \(d.band(elapsedDays: 4.5))")
+    expect(HabitData().band(elapsedDays: 3) == 20, "no graded week: ±20")
+    expect(d.midWeekAccuracy?.points == 11 && d.midWeekAccuracy?.weeks == 1, "Settings reads the day-4 error")
+
+    var stale = HabitData()
+    stale.observe(percent: 60, resetsAt: reset1, now: reset1.addingTimeInterval(-10 * hr), projected: nil)   // last read 10 h early
+    stale.observe(percent: 1, resetsAt: reset2, now: reset1.addingTimeInterval(hr), projected: nil)
+    expect(stale.weeks.isEmpty, "a week whose last reading was too early, or with no local hours, is not recorded")
+    var full = d
+    full.weeks.append([reset2.timeIntervalSince1970, 100, 500, -1, -1, -1])
+    expect(abs(full.learnedK! - 84.0 / 1680) < 1e-12, "a week that hit the limit is left out of the learned share")
+
+    // Daily budget.
+    let now = Date(timeIntervalSince1970: 1_800_000_000)
+    expect(UsagePace.dailyBudget(percent: 40, resetsAt: now.addingTimeInterval(3 * dy), now: now)?.hasPrefix("About 20% a day at an even pace") == true,
+           "60% left over 3 days: about 20% a day")
+    expect(UsagePace.dailyBudget(percent: 100, resetsAt: now.addingTimeInterval(dy), now: now) == nil, "no budget at the limit")
+
+    // Opus window.
+    let opus = ExactUsage.parse(Data(#"{"five_hour":{"utilization":10,"resets_at":"2026-10-21T18:20:00+00:00"},"seven_day":{"utilization":17,"resets_at":"2026-10-25T13:00:00+00:00"},"seven_day_opus":{"utilization":33,"resets_at":"2026-10-25T13:00:00+00:00"}}"#.utf8))
+    expect(opus?.opusWeek?.percent == 33, "the Opus week is read")
+    expect(ExactUsage.parse(Data(#"{"seven_day":{"utilization":17,"resets_at":"2026-10-25T13:00:00+00:00"},"seven_day_opus":null}"#.utf8))?.opusWeek == nil,
+           "a null Opus week is hidden")
+
+    // The strip's slots start at the window's start, 24 hours each.
+    let slots = d.slots(windowStart: start1)
+    expect(slots.count == 7 && slots.allSatisfy { $0 == 240 }, "seven 24-hour slots of 240 tokens, got \(slots)")
+}
+
 // MARK: auto-continue safety rules (Tests/ContinueTests.swift), on the main actor with a fake clock
 var continueTestsDone = false
 Task { @MainActor in await continueTests(); continueTestsDone = true }

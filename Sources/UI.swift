@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import ServiceManagement
 import SwiftUI
+import UserNotifications
 
 /// Where the notch is on the screen Buddy lives on. Screens without a notch get a
 /// small bar at the top centre instead.
@@ -106,7 +107,7 @@ final class UIState: ObservableObject {
     var shown: Bool { expanded || store.hasNews || showsUsage }
 
     /// Usage sits beside the Guy, so the ears grow to fit it (both sides, to stay centred).
-    var showsUsage: Bool { store.usage?.session != nil }
+    var showsUsage: Bool { store.shownUsage != nil }
     /// What the countdown right of the notch counts to: a usage limit that has chats paused
     /// (`limit`), or else the session window's reset.
     var resetCountdown: (date: Date, limit: Bool)? {
@@ -124,11 +125,16 @@ final class UIState: ObservableObject {
                       height: geometry.barHeight + usageSpace + bannerSpace + RowLayout.listHeight(rows: store.ordered.count) + 8)
     }
 
-    /// The plan-usage row at the top of the open list.
-    static let usageHeight: CGFloat = 26
+    /// The plan-usage rows at the top of the open list: one line per window (session, week), never wrapped.
+    static let usageRowHeight: CGFloat = 20
+    static let usagePadding: CGFloat = 4
+    static let stripHeight: CGFloat = 40
     var usageSpace: CGFloat {
-        guard let u = store.usage, u.session != nil || u.week != nil else { return 0 }
-        return Self.usageHeight
+        guard let u = store.usage else { return 0 }
+        let rows = (u.session != nil ? 1 : 0) + (u.week != nil ? 1 : 0) + (u.opusWeek != nil ? 1 : 0)
+        // The week strip's room is kept whenever exact usage has a week, so the panel does not jump when data arrives.
+        let strip = u.exact && u.week?.resetsAt != nil ? Self.stripHeight : 0
+        return rows == 0 ? 0 : CGFloat(rows) * Self.usageRowHeight + 2 * Self.usagePadding + strip
     }
 
     /// The usage-limit banner above the list, when chats are paused.
@@ -269,5 +275,43 @@ enum LoginItem {
             }
             known = SMAppService.mainApp.status == .enabled
         }
+    }
+}
+
+/// The opt-in heads-up (docs/designs/weekly-usage-pace.md, v4.1): one notification a week, by your usual hours only,
+/// when even the low end of the forecast's range runs out more than a day before the week resets.
+@MainActor
+enum WeekWarning {
+    private final class Delegate: NSObject, UNUserNotificationCenterDelegate {
+        // Buddy has no Dock icon and is often frontmost through Settings; show the banner anyway.
+        func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification)
+            async -> UNNotificationPresentationOptions { [.banner, .sound] }
+    }
+    private static let delegate = Delegate()
+
+    static func setUp() { UNUserNotificationCenter.current().delegate = delegate }
+
+    static func requestPermission() {
+        NSApp.activate(ignoringOtherApps: true)
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+
+    static func check(store: Store) {
+        guard store.warnWeekEarly, store.usage?.exact == true, let w = store.usage?.week, let reset = w.resetsAt,
+              let habits = store.habits,
+              let pace = UsagePace.weekPace(percent: w.percent, resetsAt: reset, now: Date(), habits: habits),
+              let out = pace.runsOutAt, reset.timeIntervalSince(out) > 86400,
+              pace.projected - (pace.band ?? 0) > 100 else { return }
+        let week = Int(reset.timeIntervalSince1970 / 3600)
+        guard abs(store.warnedWeekReset - week) > 1 else { return }   // once a week; an hour of reset jitter is the same week
+        store.warnedWeekReset = week
+        let days = Int((reset.timeIntervalSince(out) / 86400).rounded())
+        let content = UNMutableNotificationContent()
+        content.title = "Weekly limit"
+        content.body = "At your usual pace, your weekly limit runs out around "
+            + out.formatted(.dateTime.weekday(.abbreviated).hour().minute())
+            + ", about \(days) day\(days == 1 ? "" : "s") before it resets."
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "week-\(week)", content: content, trigger: nil))
+        Log.note("sent the weekly-limit heads-up")
     }
 }

@@ -10,12 +10,81 @@ struct UsageReading: Equatable {
     }
     var session: Window?
     var week: Window?
+    /// The separate weekly limit for Opus models, when the plan has one (exact usage only).
+    var opusWeek: Window?
     /// True when the numbers come from Anthropic; false for Buddy's local estimate.
     var exact: Bool
     /// Why exact usage is unavailable right now, if it was asked for.
     var note: String?
     /// True when signing in to Claude Code again would fix it (Settings then offers Sign In).
     var needsSignIn = false
+}
+
+/// Which window the notch pill shows (docs/designs/weekly-usage-pace.md).
+enum NotchWindow: String {
+    case session, week
+}
+
+extension UsageReading {
+    static let sessionLength: TimeInterval = 5 * 3600
+    static let weekLength: TimeInterval = 7 * 24 * 3600
+
+    /// The window the pill shows: the week only when it was chosen, the reading is exact, the week has a reset time,
+    /// and no chat is paused by a limit (then the pill matches the limit countdown beside it). Otherwise the session.
+    func shown(_ choice: NotchWindow, limitPaused: Bool) -> (window: Window, isWeek: Bool)? {
+        if choice == .week, exact, !limitPaused, let w = week, w.resetsAt != nil { return (w, true) }
+        return session.map { ($0, false) }
+    }
+}
+
+/// Where a window ends up by its reset at the average rate so far, and when it would run out if that is first.
+struct UsagePace: Equatable {
+    /// "About 12% a day at an even pace to Sat 9 AM": what is left spread evenly over the days left (weekly windows).
+    static func dailyBudget(percent: Double, resetsAt: Date?, now: Date, short: Bool = false) -> String? {
+        guard let reset = resetsAt, reset > now, percent < 100 else { return nil }
+        let days = reset.timeIntervalSince(now) / 86400
+        guard days > 0.1 else { return nil }
+        let perDay = Int(((100 - percent) / days).rounded())
+        let when = reset.formatted(.dateTime.weekday(.abbreviated).hour())
+        return short ? "\(perDay)% a day to \(when)" : "About \(perDay)% a day at an even pace to \(when)."
+    }
+
+    /// Percent of the limit used by the reset at this rate.
+    let projected: Double
+    /// When it would reach 100%, only if that comes before the reset; rounded to 5 minutes.
+    let runsOutAt: Date?
+    /// What the projection rests on: the time left (v2), or your usual hours (v3.1, the week only).
+    enum Basis: Equatable { case time, habits }
+    var basis: Basis = .time
+    /// How far forecasts this far into a window have been off, in points (week by habits only).
+    var band: Double? = nil
+
+    /// nil when there is nothing honest to say: no reset or one already past, a reset that does not fit the window
+    /// (stale or moved), under 3% used, already at the limit, or too early in the window for an average to mean
+    /// anything (1 hour of a session, 24 hours of a week), since a heavy first stretch would project a false run-out.
+    static func pace(percent: Double, resetsAt: Date?, length: TimeInterval, now: Date) -> UsagePace? {
+        guard let reset = resetsAt, reset > now, percent >= 3, percent < 100 else { return nil }
+        let start = reset.addingTimeInterval(-length)
+        let elapsed = now.timeIntervalSince(start)
+        let minimum: TimeInterval = length > UsageReading.sessionLength ? 24 * 3600 : 3600
+        guard elapsed > 0, elapsed <= length, elapsed >= minimum else { return nil }
+        let projected = percent * length / elapsed
+        guard projected.rounded() > 100 else { return UsagePace(projected: projected, runsOutAt: nil) }
+        let out = start.addingTimeInterval(elapsed * 100 / percent).timeIntervalSinceReferenceDate
+        return UsagePace(projected: projected, runsOutAt: Date(timeIntervalSinceReferenceDate: (out / 300).rounded() * 300))
+    }
+
+    /// The hover sentence: "At this rate, 130% of the limit by the reset (Sat 9 AM); runs out around Thu 2:05 PM."
+    func sentence(resetsAt: Date, weekly: Bool) -> String {
+        let when: (Date) -> String = { weekly ? $0.formatted(.dateTime.weekday(.abbreviated).hour().minute())
+                                              : $0.formatted(date: .omitted, time: .shortened) }
+        let lead = basis == .habits ? "At your usual pace" : "At this rate"
+        let number = band.map { b in b > 1 ? "\(Int((projected - b).rounded()))–\(Int((projected + b).rounded()))%" : nil } ?? nil
+        let head = "\(lead), \(number ?? "\(Int(projected.rounded()))%") of the limit by the reset (\(when(resetsAt)))"
+        let tail = basis == .habits ? " Learned from Claude on this Mac." : ""
+        if let out = runsOutAt { return head + "; runs out around \(when(out))." + tail }
+        return head + "; about \(max(0, 100 - Int(projected.rounded())))% left then." + tail
+    }
 }
 
 /// One reply's cost in "weighted tokens", Buddy's unit for the local estimate.
@@ -143,15 +212,97 @@ final class UsageScanner: @unchecked Sendable {
                 limits[(entry["uuid"] as? String) ?? stamp] = UsageLimit(hitAt: date, resetsAt: reset)
                 continue
             }
-            guard let id = message["id"] as? String, let usage = message["usage"] as? [String: Any],
-                  let model = message["model"] as? String, model != "<synthetic>" else { continue }
-            func n(_ key: String) -> Double { (usage[key] as? NSNumber)?.doubleValue ?? 0 }
-            let weight = UsageEstimate.weight(model: model, input: n("input_tokens"), output: n("output_tokens"),
-                                              cacheWrite: n("cache_creation_input_tokens"), cacheRead: n("cache_read_input_tokens"))
+            guard let (id, weight) = Self.replyWeight(message) else { continue }
             // A reply can be written in several lines as it streams; keep the largest.
             if let old = replies[id], old.weight >= weight { continue }
             replies[id] = UsageReply(date: date, weight: weight)
         }
+    }
+
+    /// A reply's message id and weight, or nil for anything that is not a model reply.
+    static func replyWeight(_ message: [String: Any]) -> (String, Double)? {
+        guard let id = message["id"] as? String, let usage = message["usage"] as? [String: Any],
+              let model = message["model"] as? String, model != "<synthetic>" else { return nil }
+        func n(_ key: String) -> Double { (usage[key] as? NSNumber)?.doubleValue ?? 0 }
+        return (id, UsageEstimate.weight(model: model, input: n("input_tokens"), output: n("output_tokens"),
+                                         cacheWrite: n("cache_creation_input_tokens"), cacheRead: n("cache_read_input_tokens")))
+    }
+
+    // ---- habits (Habits.swift): whole hours, the recent burn, and a time-sliced catch-up of older hours ----
+
+    /// Weighted tokens per UTC hour for the whole hours this scan covers: from the first full hour after the 3-day
+    /// cutoff through the current hour. The partial edge hour is left out, so it is never overwritten with a part.
+    func hourTotals(now: Date) -> (fromHour: Int, throughHour: Int, totals: [Int: Double]) {
+        let fromHour = Int(ceil((now.timeIntervalSince1970 - Self.history) / 3600))
+        let throughHour = Int(floor(now.timeIntervalSince1970 / 3600))
+        var totals: [Int: Double] = [:]
+        for r in replies.values {
+            let h = Int(floor(r.date.timeIntervalSince1970 / 3600))
+            if h >= fromHour, h <= throughHour { totals[h, default: 0] += r.weight }
+        }
+        return (fromHour, throughHour, totals)
+    }
+
+    func weight(since: Date) -> Double {
+        replies.values.reduce(0) { $1.date >= since ? $0 + $1.weight : $0 }
+    }
+
+    private var catchUpJob: (fromHour: Int, toHour: Int, files: [URL], seen: [String: (Int, Double)])?
+
+    /// Reads replies from `fromHour` up to `toHour` from older transcripts, a few files per call (about `budget`
+    /// seconds), in 1 MB chunks so a large transcript is never loaded whole. Returns the hourly totals when done,
+    /// nil while there is more to read. A reply copied into several files counts once (its message id).
+    func catchUp(fromHour: Int, toHour: Int, budget: TimeInterval) -> [Int: Double]? {
+        guard fromHour <= toHour else { return [:] }
+        if catchUpJob == nil || catchUpJob!.fromHour != fromHour || catchUpJob!.toHour != toHour {
+            let since = Date(timeIntervalSince1970: Double(fromHour) * 3600)
+            let fm = FileManager.default
+            var files: [URL] = []
+            for dir in (try? fm.contentsOfDirectory(at: projectsRoot, includingPropertiesForKeys: nil)) ?? [] {
+                for file in (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+                where file.pathExtension == "jsonl" {
+                    if let m = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
+                       m >= since { files.append(file) }
+                }
+            }
+            catchUpJob = (fromHour, toHour, files, [:])
+        }
+        let deadline = Date().addingTimeInterval(budget)
+        while var job = catchUpJob, let file = job.files.first {
+            job.files.removeFirst()
+            Self.eachLine(of: file) { line in
+                guard line.range(of: Data("\"usage\"".utf8)) != nil,
+                      let entry = (try? JSONSerialization.jsonObject(with: Data(line))) as? [String: Any],
+                      entry["type"] as? String == "assistant", entry["isApiErrorMessage"] as? Bool != true,
+                      let stamp = entry["timestamp"] as? String, let date = Self.parseDate(stamp),
+                      let (id, w) = Self.replyWeight(entry["message"] as? [String: Any] ?? [:]) else { return }
+                let h = Int(floor(date.timeIntervalSince1970 / 3600))
+                guard h >= job.fromHour, h <= job.toHour else { return }
+                if let old = job.seen[id], old.1 >= w { return }
+                job.seen[id] = (h, w)
+            }
+            catchUpJob = job
+            if Date() > deadline { break }
+        }
+        guard let job = catchUpJob, job.files.isEmpty else { return nil }
+        catchUpJob = nil
+        var totals: [Int: Double] = [:]
+        for (h, w) in job.seen.values { totals[h, default: 0] += w }
+        return totals
+    }
+
+    /// Calls `body` with each complete line of a file, reading 1 MB at a time.
+    static func eachLine(of file: URL, _ body: (Data.SubSequence) -> Void) {
+        guard let handle = FileHandle(forReadingAtPath: file.path) else { return }
+        defer { try? handle.close() }
+        var carry = Data()
+        while let chunk = try? handle.read(upToCount: 1 << 20), !chunk.isEmpty {
+            carry.append(chunk)
+            guard let last = carry.lastIndex(of: 0x0A) else { continue }
+            for line in carry[..<last].split(separator: 0x0A) { body(line) }
+            carry = Data(carry[(last + 1)...])
+        }
+        if !carry.isEmpty { body(carry[...]) }
     }
 
     static func parseDate(_ text: String) -> Date? {
@@ -250,7 +401,9 @@ enum ExactUsage {
         }
         let session = window("five_hour"), week = window("seven_day")
         guard session != nil || week != nil else { return nil }
-        return UsageReading(session: session, week: week, exact: true)
+        var reading = UsageReading(session: session, week: week, exact: true)
+        reading.opusWeek = window("seven_day_opus")
+        return reading
     }
 
     /// Reads the item through /usr/bin/security, the tool Claude Code itself stores it with.

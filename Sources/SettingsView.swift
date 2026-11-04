@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UserNotifications
 
 /// Buddy's small Settings window (right-click the pill, then Settings…).
 struct SettingsView: View {
@@ -9,6 +10,7 @@ struct SettingsView: View {
     @State private var account: ClaudeAccount?
     @State private var checkedAccount = false
     @State private var confirmSignOut = false
+    @State private var notificationsDenied = false
 
     static let releasesURL = URL(string: "https://github.com/purplelink-llc/buddy/releases/latest")!
 
@@ -75,6 +77,40 @@ struct SettingsView: View {
                 } footer: {
                     Text("Off: an estimate from your chats on this Mac (≈). On: exact session and weekly usage from Anthropic, using Claude Code's sign-in. Besides the daily update check, this is Buddy's only network use.")
                         .font(.caption).foregroundStyle(.secondary)
+                }
+                Section {
+                    LabeledContent("Usage habits") {
+                        if let data = store.habitData, data.learnedDays >= 21 {
+                            Text("Learned from \(Int(data.learnedDays)) days on this Mac")
+                        } else {
+                            Text("Learning: \(Int(store.habitData?.learnedDays ?? 0)) of 21 days")
+                        }
+                    }
+                    if let acc = store.habitData?.midWeekAccuracy {
+                        Text("Mid-week forecasts were off by \(Int(acc.points.rounded())) points on average (\(acc.weeks) week\(acc.weeks == 1 ? "" : "s")).")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Toggle("Warn me when the week will run out early", isOn: Binding(
+                        get: { store.warnWeekEarly },
+                        set: { on in
+                            store.warnWeekEarly = on
+                            if on { WeekWarning.requestPermission() }
+                        }))
+                        .disabled(!store.exactUsageOn)
+                    if store.warnWeekEarly, notificationsDenied {
+                        Text("Notifications are off for Buddy in System Settings → Notifications.")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
+                    Button("Forget Usage Habits") { store.onForgetHabits?() }
+                } header: {
+                    Text("Pace")
+                } footer: {
+                    Text("Buddy learns your usual hours from Claude Code on this Mac (a small file in Application Support, never sent anywhere) to forecast the week. The warning is one notification a week, sent only when even the low end of the forecast runs out over a day before the reset.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .task(id: store.warnWeekEarly) {
+                    let settings = await UNUserNotificationCenter.current().notificationSettings()
+                    notificationsDenied = settings.authorizationStatus == .denied
                 }
                 Section("Claude Code") {
                     LabeledContent("Hook") {
