@@ -765,6 +765,86 @@ do {
     expect(slots.count == 7 && slots.allSatisfy { $0 == 240 }, "seven 24-hour slots of 240 tokens, got \(slots)")
 }
 
+// MARK: account tag and usual limit times (Accounts.swift)
+do {
+    expect(AccountTag.appUuid(Data(#"{"lastKnownAccountUuid":"aaa","oauth:x":"y"}"#.utf8)) == "aaa", "the app's account uuid is read")
+    expect(AccountTag.appUuid(Data("{}".utf8)) == nil, "no app account without the key")
+    let code = AccountTag.codeAccount(Data(#"{"oauthAccount":{"accountUuid":"bbb","emailAddress":"me@example.com"}}"#.utf8))
+    expect(code?.uuid == "bbb" && code?.email == "me@example.com", "Claude Code's account is read")
+
+    let root = scratch.appendingPathComponent("home", isDirectory: true)
+    let fm = FileManager.default
+    for (name, uuid) in [("personal", "aaa"), ("work", "ccc")] {
+        let dir = root.appendingPathComponent(".claude-accounts/\(name)", isDirectory: true)
+        try! fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        try! Data("\(uuid)\n".utf8).write(to: dir.appendingPathComponent("account"))
+    }
+    let configDir = root.appendingPathComponent("Library/Application Support/Claude", isDirectory: true)
+    try! fm.createDirectory(at: configDir, withIntermediateDirectories: true)
+    try! Data(#"{"lastKnownAccountUuid":"ccc"}"#.utf8).write(to: configDir.appendingPathComponent("config.json"))
+    try! Data(#"{"oauthAccount":{"accountUuid":"aaa","emailAddress":"me@example.com"}}"#.utf8).write(to: root.appendingPathComponent(".claude.json"))
+    let tag = AccountTag.current(home: root)
+    expect(tag == AccountTag(app: "work", code: "personal") && tag?.mismatch == true, "saved names are used and a mismatch is seen, got \(String(describing: tag))")
+    try! Data(#"{"oauthAccount":{"accountUuid":"zzz9999999","emailAddress":"pat@example.com"}}"#.utf8).write(to: root.appendingPathComponent(".claude.json"))
+    expect(AccountTag.current(home: root)?.code == "pat", "an unsaved account falls back to its email name")
+    expect(AccountTag.current(home: scratch.appendingPathComponent("nobody")) == nil, "no tag with no files")
+
+    // Usual times, in a fixed time zone.
+    var cal = Calendar(identifier: .gregorian)
+    cal.timeZone = TimeZone(identifier: "America/Chicago")!
+    let day0 = cal.date(from: DateComponents(year: 2026, month: 10, day: 1))!
+    func at(_ day: Int, _ h: Int, _ m: Int) -> Date { cal.date(byAdding: .minute, value: day * 1440 + h * 60 + m, to: day0)! }
+    let now = at(20, 9, 0)
+    let afternoon = [at(10, 14, 50), at(12, 15, 10), at(15, 15, 0), at(16, 15, 20)]
+    expect(LimitTimes.usual(afternoon, now: now, calendar: cal) == [15 * 60 + 5], "four afternoons near 3 PM average to 3:05, got \(LimitTimes.usual(afternoon, now: now, calendar: cal))")
+    expect(LimitTimes.usual(Array(afternoon.prefix(2)), now: now, calendar: cal).isEmpty, "two days is not yet usual")
+    expect(LimitTimes.usual([at(3, 15, 0), at(3, 15, 30), at(3, 14, 45)], now: now, calendar: cal).isEmpty, "three hits on one day are one day")
+    let late = [at(5, 23, 40), at(6, 0, 20), at(8, 0, 0)]
+    expect(LimitTimes.usual(late, now: now, calendar: cal) == [0], "a cluster across midnight centres on midnight, got \(LimitTimes.usual(late, now: now, calendar: cal))")
+    expect(LimitTimes.usual(afternoon + late, now: now, calendar: cal) == [0, 15 * 60 + 5], "two usual times, earliest first")
+    expect(LimitTimes.usual(afternoon, now: at(60, 9, 0), calendar: cal).isEmpty, "hits older than four weeks don't count")
+    let allHours = (0..<24).map { at($0, ($0 * 5) % 24, 0) }   // one limit a day, each at a different hour
+    expect(LimitTimes.usual(allHours, now: at(25, 0, 0), calendar: cal).isEmpty,
+           "3 of 24 limit days near any hour is under a quarter: no usual time")
+
+    // The heads-up window: up to an hour before a usual time, today or tomorrow.
+    expect(LimitTimes.upcoming([15 * 60], now: at(20, 14, 10), calendar: cal) == at(20, 15, 0), "50 minutes before 3 PM is in the window")
+    expect(LimitTimes.upcoming([15 * 60], now: at(20, 13, 30), calendar: cal) == nil, "90 minutes before is too early")
+    expect(LimitTimes.upcoming([15 * 60], now: at(20, 15, 1), calendar: cal) == nil, "just after is past")
+    expect(LimitTimes.upcoming([10], now: at(20, 23, 30), calendar: cal) == at(21, 0, 10), "a usual time just after midnight is tomorrow's")
+
+    // The log: dedup, account tagging, four-week window.
+    var log = LimitLog()
+    let t = Date(timeIntervalSince1970: 1_800_000_000)
+    func lim(_ ago: TimeInterval, resetsIn: TimeInterval = 600) -> UsageLimit {
+        UsageLimit(hitAt: t.addingTimeInterval(-ago), resetsAt: t.addingTimeInterval(-ago + resetsIn))
+    }
+    log.record([lim(3600), lim(300), lim(240)], account: "personal", now: t)
+    expect(log.hits.count == 2, "hits minutes apart are one hit, got \(log.hits.count)")
+    expect(log.hits[0].account == nil && log.hits[1].account == "personal", "only a recent hit is tagged with the account seen now")
+    log.record([lim(3600)], account: "work", now: t)
+    expect(log.hits.count == 2, "a hit seen again is not added twice")
+    var retries = LimitLog()
+    retries.record([lim(4 * 3600, resetsIn: 3 * 3600), lim(3 * 3600), lim(2 * 3600 + 60), lim(3600)], account: nil, now: t)
+    expect(retries.hits.count == 2, "retries before the reset are the same limit; one after it is new, got \(retries.hits.count)")
+    log.hits.append(LimitLog.Hit(at: t.timeIntervalSince1970 - 100, account: "work"))
+    expect(log.dates(for: "personal").count == 2 && log.dates(for: "work").count == 2, "each account counts its own hits and the untagged ones")
+    log.record([], account: nil, now: t.addingTimeInterval(LimitLog.keep))
+    expect(log.hits.isEmpty, "hits past four weeks are dropped")
+
+    // Backfill reads session limits from old transcripts, not weekly ones.
+    let projects = scratch.appendingPathComponent("limit-projects/p", isDirectory: true)
+    try! fm.createDirectory(at: projects, withIntermediateDirectories: true)
+    let lines = [
+        #"{"type":"assistant","isApiErrorMessage":true,"error":"rate_limit","timestamp":"2026-11-01T20:00:00.000Z","message":{"content":[{"type":"text","text":"You've hit your session limit · resets 7pm (America/Chicago)"}]}}"#,
+        #"{"type":"assistant","isApiErrorMessage":true,"error":"rate_limit","timestamp":"2026-11-02T20:00:00.000Z","message":{"content":[{"type":"text","text":"You've hit your weekly limit · resets Nov 5, 7pm (America/Chicago)"}]}}"#,
+        #"{"type":"user","timestamp":"2026-11-02T20:01:00.000Z","message":{"content":"rate_limit is a word"}}"#,
+    ]
+    try! Data(lines.joined(separator: "\n").utf8).write(to: projects.appendingPathComponent("a.jsonl"))
+    let older = LimitKeeper.olderHits(in: projects.deletingLastPathComponent(), now: Date())
+    expect(older.count == 1 && older.first?.hitAt == UsageScanner.parseDate("2026-11-01T20:00:00.000Z"), "one session limit backfilled, got \(older)")
+}
+
 // MARK: auto-continue safety rules (Tests/ContinueTests.swift), on the main actor with a fake clock
 var continueTestsDone = false
 Task { @MainActor in await continueTests(); continueTestsDone = true }

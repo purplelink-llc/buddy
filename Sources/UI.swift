@@ -134,7 +134,28 @@ final class UIState: ObservableObject {
         let rows = (u.session != nil ? 1 : 0) + (u.week != nil ? 1 : 0) + (u.opusWeek != nil ? 1 : 0)
         // The week strip's room is kept whenever exact usage has a week, so the panel does not jump when data arrives.
         let strip = u.exact && u.week?.resetsAt != nil ? Self.stripHeight : 0
-        return rows == 0 ? 0 : CGFloat(rows) * Self.usageRowHeight + 2 * Self.usagePadding + strip
+        let account = Self.accountLine(store) == nil ? 0 : 1
+        return rows == 0 ? 0 : CGFloat(rows + account) * Self.usageRowHeight + 2 * Self.usagePadding + strip
+    }
+
+    /// The line under the usage rows: which account the Claude app is on, and when the limit usually hits. Warns
+    /// when exact usage reads a different account (Claude Code's sign-in) than the app's chats run on.
+    static func accountLine(_ store: Store) -> (account: String?, limits: String?, warn: Bool, help: String)? {
+        let tag = store.accountTag
+        let warn = store.exactUsageOn && tag?.mismatch == true
+        let account = tag?.app.map { warn ? "\($0) · usage is \(tag?.code ?? "")" : $0 }
+        let times = store.usualLimitTimes.map { LimitTimes.label($0) }
+        let limits = times.isEmpty ? nil : "Limit usually ~" + times.joined(separator: ", ")
+        guard account != nil || limits != nil else { return nil }
+        var help: [String] = []
+        if let app = tag?.app { help.append("The Claude app is signed in as \(app).") }
+        if warn, let code = tag?.code {
+            help.append("Exact usage comes from Claude Code's own sign-in, \(code), so these numbers are for \(code), not \(tag?.app ?? "").")
+        }
+        if !times.isEmpty {
+            help.append("Over the last four weeks your session limit usually hit around \(times.joined(separator: " and ")).")
+        }
+        return (account, limits, warn, help.joined(separator: " "))
     }
 
     /// The usage-limit banner above the list, when chats are paused.
@@ -313,5 +334,27 @@ enum WeekWarning {
             + ", about \(days) day\(days == 1 ? "" : "s") before it resets."
         UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "week-\(week)", content: content, trigger: nil))
         Log.note("sent the weekly-limit heads-up")
+    }
+}
+
+/// The opt-in limit-time heads-up (docs/designs/account-and-limit-times.md): one notification up to an hour before a
+/// time of day the session limit usually hits, only when the session is already at least 40% used and no chat is
+/// paused by a limit.
+@MainActor
+enum LimitWarning {
+    static func check(store: Store, now: Date = Date()) {
+        guard store.warnUsualLimit, store.pausedSessions.isEmpty,
+              let session = store.usage?.session, session.percent >= 40, session.percent < 100,
+              let at = LimitTimes.upcoming(store.usualLimitTimes, now: now),
+              abs(store.warnedLimitAt - at.timeIntervalSince1970) > 60 else { return }
+        store.warnedLimitAt = at.timeIntervalSince1970
+        let content = UNMutableNotificationContent()
+        content.title = "Session limit"
+        content.body = "You usually hit your session limit around " + at.formatted(date: .omitted, time: .shortened)
+            + ". This session is at \(Int(session.percent.rounded()))%"
+            + (store.accountTag?.app.map { " on \($0)." } ?? ".")
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "limit-\(Int(at.timeIntervalSince1970))",
+                                                                     content: content, trigger: nil))
+        Log.note("sent the usual-limit heads-up")
     }
 }

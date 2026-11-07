@@ -97,7 +97,20 @@ struct SettingsView: View {
                             if on { WeekWarning.requestPermission() }
                         }))
                         .disabled(!store.exactUsageOn)
-                    if store.warnWeekEarly, notificationsDenied {
+                    Toggle("Warn me before my usual limit time", isOn: Binding(
+                        get: { store.warnUsualLimit },
+                        set: { on in
+                            store.warnUsualLimit = on
+                            if on { WeekWarning.requestPermission() }
+                        }))
+                    if store.usualLimitTimes.isEmpty {
+                        Text("No usual limit time yet: it takes hits near the same time on three days in four weeks.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Text("Your session limit usually hits around " + store.usualLimitTimes.map { LimitTimes.label($0) }.joined(separator: " and ") + ".")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    if (store.warnWeekEarly || store.warnUsualLimit), notificationsDenied {
                         Text("Notifications are off for Buddy in System Settings → Notifications.")
                             .font(.caption).foregroundStyle(.orange)
                     }
@@ -105,10 +118,10 @@ struct SettingsView: View {
                 } header: {
                     Text("Pace")
                 } footer: {
-                    Text("Buddy learns your usual hours from Claude Code on this Mac (a small file in Application Support, never sent anywhere) to forecast the week. The warning is one notification a week, sent only when even the low end of the forecast runs out over a day before the reset.")
+                    Text("Buddy learns your usual hours from Claude Code on this Mac (a small file in Application Support, never sent anywhere) to forecast the week. The weekly warning is one notification a week, sent only when even the low end of the forecast runs out over a day before the reset. The limit-time warning comes up to an hour before a time your session limit usually hits, only when the session is already 40% used.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                .task(id: store.warnWeekEarly) {
+                .task(id: "\(store.warnWeekEarly)\(store.warnUsualLimit)") {
                     let settings = await UNUserNotificationCenter.current().notificationSettings()
                     notificationsDenied = settings.authorizationStatus == .denied
                 }

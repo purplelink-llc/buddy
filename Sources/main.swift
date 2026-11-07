@@ -25,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUStandardUserDriverD
     let usageScanner = UsageScanner()
     /// Usage habits for the weekly pace (Habits.swift); on scanQueue only, like the scanner.
     let habitKeeper = HabitKeeper()
+    let limitKeeper = LimitKeeper()
     var usageTimer: Timer?
     /// The last exact-usage problem logged, so the same one isn't logged every 3 minutes.
     var lastUsageNote: String?
@@ -195,21 +196,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUStandardUserDriverD
     func refreshUsage() {
         let scanner = usageScanner
         let keeper = habitKeeper
+        let limitKeeper = limitKeeper
         let exact = store.exactUsageOn
         scanQueue.async {
             let local = scanner.scan()
             let habits = keeper.update(scanner: scanner, now: Date())
             let habitData = keeper.data, generation = keeper.generation
+            let account = AccountTag.current()
+            let usualLimits = limitKeeper.update(scanner: scanner, account: account?.app, now: Date())
             DispatchQueue.main.async { [weak self] in
                 MainActor.assumeIsolated {
                     guard let self else { return }
+                    if self.store.accountTag != account { self.store.accountTag = account }
+                    if self.store.usualLimitTimes != usualLimits { self.store.usualLimitTimes = usualLimits }
                     // A result from before a Forget never puts the forgotten habits back.
                     if generation >= self.store.habitGeneration {
                         self.store.habitGeneration = generation
                         if self.store.habits != habits { self.store.habits = habits }
                         if self.store.habitData != habitData { self.store.habitData = habitData }
                     }
-                    guard exact else { self.store.usage = local; return }
+                    guard exact else { self.store.usage = local; LimitWarning.check(store: self.store); return }
                     Task { @MainActor in
                         var result = await ExactUsage.fetch()
                         if case .failure(.expired) = result, Date().timeIntervalSince(self.lastRenewal) > 600 {
@@ -226,6 +232,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUStandardUserDriverD
                             self.lastUsageNote = nil
                             self.scanQueue.async { keeper.observe(reading, now: Date()) }
                             WeekWarning.check(store: self.store)
+                            LimitWarning.check(store: self.store)
                         case .failure(let failure):
                             var fallback = local
                             fallback.note = failure.message

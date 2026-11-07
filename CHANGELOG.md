@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.12.0
+
+### Added
+- **Which account.** The open list shows the Claude app's signed-in account, by the name you gave it with the account switcher (else the start of its email). When Claude Code is signed in to a different account, the line turns orange and says so, because exact usage comes from Claude Code's account, not the app's.
+- **Your usual limit times.** Buddy keeps four weeks of the times your 5-hour session limit hit (a small private file, never sent anywhere; the first run reads them from Claude Code's transcripts) and shows the times of day it usually happens, such as "Limit usually ~1:15 PM, 5:20 PM". A time counts only when it comes up on at least three days and on a quarter of the days with any limit, so someone who runs out at all hours sees none. A chat retrying into the same limit, or several chats stopping at once, counts once.
+- **Heads-up before a usual limit time (off by default).** At most one notification, up to an hour before a usual time, when the session is already 40% or more used.
+
 ## 0.11.0
 
 ### Added

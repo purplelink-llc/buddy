@@ -203,13 +203,7 @@ final class UsageScanner: @unchecked Sendable {
                   let stamp = entry["timestamp"] as? String, let date = Self.parseDate(stamp) else { continue }
             let message = entry["message"] as? [String: Any] ?? [:]
             if entry["isApiErrorMessage"] as? Bool == true {
-                guard entry["error"] as? String == "rate_limit" else { continue }
-                let parts = message["content"] as? [[String: Any]] ?? []
-                let text = parts.compactMap { $0["text"] as? String }.joined(separator: " ")
-                // Session limits only; a weekly limit says nothing about the 5-hour window.
-                guard text.range(of: "session limit", options: .caseInsensitive) != nil,
-                      let reset = ResetTime.parse(text, after: date) else { continue }
-                limits[(entry["uuid"] as? String) ?? stamp] = UsageLimit(hitAt: date, resetsAt: reset)
+                if let limit = Self.sessionLimit(entry, at: date) { limits[(entry["uuid"] as? String) ?? stamp] = limit }
                 continue
             }
             guard let (id, weight) = Self.replyWeight(message) else { continue }
@@ -217,6 +211,21 @@ final class UsageScanner: @unchecked Sendable {
             if let old = replies[id], old.weight >= weight { continue }
             replies[id] = UsageReply(date: date, weight: weight)
         }
+    }
+
+    /// When the session limits seen in the last few days hit (LimitKeeper keeps them longer).
+    var limitHits: [UsageLimit] { Array(limits.values) }
+
+    /// A transcript's API-error entry as a session limit, or nil. Session limits only; a weekly limit says nothing
+    /// about the 5-hour window.
+    static func sessionLimit(_ entry: [String: Any], at date: Date) -> UsageLimit? {
+        guard entry["error"] as? String == "rate_limit" else { return nil }
+        let message = entry["message"] as? [String: Any] ?? [:]
+        let parts = message["content"] as? [[String: Any]] ?? []
+        let text = parts.compactMap { $0["text"] as? String }.joined(separator: " ")
+        guard text.range(of: "session limit", options: .caseInsensitive) != nil,
+              let reset = ResetTime.parse(text, after: date) else { return nil }
+        return UsageLimit(hitAt: date, resetsAt: reset)
     }
 
     /// A reply's message id and weight, or nil for anything that is not a model reply.

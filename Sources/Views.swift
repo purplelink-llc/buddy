@@ -434,11 +434,33 @@ struct PillView: View {
                               help: UsagePace.dailyBudget(percent: u.week?.percent ?? 0, resetsAt: reset, now: Date()))
                         .frame(height: UIState.stripHeight)
                 }
+                if let line = UIState.accountLine(store) { accountRow(line) }
             }
             .padding(.horizontal, 18)
             .padding(.vertical, UIState.usagePadding)
             .frame(height: ui.usageSpace)
         }
+    }
+
+    /// The Claude app's account on the left, the usual limit times on the right (Accounts.swift).
+    private func accountRow(_ line: (account: String?, limits: String?, warn: Bool, help: String)) -> some View {
+        HStack(spacing: 6) {
+            if let account = line.account {
+                (Text(Image(systemName: line.warn ? "exclamationmark.triangle.fill" : "person.crop.circle")).font(.system(size: 9))
+                 + Text(" " + account))
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(line.warn ? Color.orange : Color.secondary)
+            }
+            Spacer(minLength: 4)
+            if let limits = line.limits {
+                Text(limits).font(.system(size: 10).monospacedDigit()).foregroundStyle(.tertiary)
+            }
+        }
+        .lineLimit(1)
+        .frame(height: UIState.usageRowHeight)
+        .help(line.help)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(line.help)
     }
 
     /// Label, bar, percent, pace and reset in fixed columns. The bar's tick marks how much of the window's time has

@@ -78,7 +78,7 @@ echo "built $APP and build/buddy-hook"
 
 case "${1:-}" in
   test)
-    swiftc "${FLAGS[@]}" -o build/tests Tests/main.swift Tests/ContinueTests.swift Sources/Continuer.swift Sources/Habits.swift Sources/Model.swift Sources/Jump.swift Sources/Inbox.swift Sources/HookSetup.swift Sources/Usage.swift
+    swiftc "${FLAGS[@]}" -o build/tests Tests/main.swift Tests/ContinueTests.swift Sources/Continuer.swift Sources/Habits.swift Sources/Model.swift Sources/Jump.swift Sources/Inbox.swift Sources/HookSetup.swift Sources/Usage.swift Sources/Accounts.swift
     sandbox=$(mktemp -d "${TMPDIR:-/tmp}/buddy-tests.XXXXXX")
     HOME="$sandbox" CFFIXED_USER_HOME="$sandbox" BUDDY_HOOK="$PWD/build/buddy-hook" build/tests
     rm -rf "${sandbox:?}"

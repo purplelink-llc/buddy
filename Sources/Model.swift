@@ -184,6 +184,20 @@ final class Store: ObservableObject {
         get { defaults.integer(forKey: "warnedWeekReset") }
         set { defaults.set(newValue, forKey: "warnedWeekReset") }
     }
+    /// The Claude app's account and Claude Code's, by their saved names (Accounts.swift).
+    @Published var accountTag: AccountTag?
+    /// Times of day (minutes after midnight) when the session limit usually hits, from the last four weeks.
+    @Published var usualLimitTimes: [Int] = []
+    /// Opt-in: a notification an hour before a usual limit time, when the session is already well used.
+    var warnUsualLimit: Bool {
+        get { defaults.bool(forKey: "warnUsualLimit") }
+        set { defaults.set(newValue, forKey: "warnUsualLimit"); objectWillChange.send() }
+    }
+    /// The usual limit time (as a date, in seconds since 1970) last warned about, so each is sent once.
+    var warnedLimitAt: Double {
+        get { defaults.double(forKey: "warnedLimitAt") }
+        set { defaults.set(newValue, forKey: "warnedLimitAt") }
+    }
     /// Deletes the learned habits (right-click → Forget Usage Habits).
     var onForgetHabits: (() -> Void)?
     /// Asks the app to re-read usage now (set by the app delegate).
