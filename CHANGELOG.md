@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.13.0
+
+### Added
+- **Hook health.** Buddy now notices when its hook entry is gone from `~/.claude/settings.json`, when `~/.claude/hooks/buddy-hook` is missing, or when the installed hook differs from the one in the app. It checks at launch and about once a minute (only when one of those files changed) and shows the Connect banner again, or an "Update Buddy's hook" banner for the older-hook case. Not now hides a repair banner until Buddy is next opened. After an app update, an older installed hook is refreshed silently (no banner); the Update banner stays for a hook changed by something else, and a removed settings entry is never re-added without asking.
+- **Accessibility lost.** When Auto is on, or Continue now is offered, but Accessibility is not granted (for example after rebuilding an ad hoc signed copy), the open list shows an orange line with an Open Privacy Settings button. Buddy checks the permission each time the list opens, not continuously.
+- **Chat titles unavailable.** When the Claude app's chat files exist but none of them can be read, Buddy logs it once per launch and Settings says "Chat titles unavailable: the Claude app changed its files". Folder names are shown instead. No notice appears when there are no chat files or at least one is readable.
+- **Jump fallback.** When the `claude://code/continue` link cannot open a chat, or the Claude app is not running, the open list shows an orange line for 5 seconds saying so ("Opened Claude; couldn't open that chat" or "Claude isn't running; couldn't open that chat"). Buddy also brings the Claude app forward.
+- **Status in Settings.** A Status section at the top of Settings shows the hook (connected, not connected, out of date or needs repair, with the app version), the time of the last hook event this run, Accessibility, and the state of exact usage. Reveal Log shows `~/Library/Logs/Buddy/buddy.log` in Finder.
+- **Copy Diagnostics.** A button in Status copies the status lines plus the app, macOS and hardware version as plain text. It contains no paths, transcripts, chat titles or folder names.
+
+### Changed
+- The separate Hook status text, Accessibility row and About "Show Log" in Settings are gone; Status covers them. Connect, Disconnect, Update and Repair stay in the Claude Code section.
+
 ## 0.12.0
 
 ### Added

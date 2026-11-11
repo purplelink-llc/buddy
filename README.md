@@ -60,7 +60,16 @@ Claude Code's hook events are documented. However, three Buddy features depend o
 2. **Jumping to a chat**, which uses the app's `claude://code/continue` link.
 3. **Continue now and Auto**, which type into the app's message box.
 
-When one of these breaks, Buddy falls back to the folder name, to bringing the app forward, or to doing nothing. Please open an issue when that happens.
+When one of these breaks, Buddy says so where it can:
+
+- If the chat files exist but none can be read, Settings says chat titles are unavailable and the list shows folder names.
+- If the `claude://` link cannot open a chat, an orange line says so for 5 seconds and Buddy brings the Claude app forward.
+- If Auto or Continue now is on without Accessibility, the open list shows an orange line with an Open Privacy Settings button.
+- If the hook entry or `~/.claude/hooks/buddy-hook` is missing or out of date, Buddy shows the Connect or Update banner. After a Buddy update, an older hook is refreshed without a banner.
+
+**Settings → Status** lists the hook, the last event, Accessibility and exact usage, and **Copy Diagnostics** copies the same lines as plain text (no paths, transcripts or chat titles) for an issue report.
+
+Some limits remain. Buddy cannot tell when a link opens the wrong chat. Accessibility is re-checked when the list opens, so a change shows up the next time you open it. Because these features rely on parts of the Claude app that Anthropic does not document, an update can still break one in a way Buddy does not detect. Please open an issue when that happens.
 
 ## Build from source
 

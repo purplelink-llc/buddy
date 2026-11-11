@@ -19,6 +19,7 @@ struct SettingsView: View {
         // in System Settings shows up without reopening it.
         TimelineView(.periodic(from: .now, by: 2)) { _ in
             Form {
+                statusSection
                 Section("General") {
                     Toggle("Open at login", isOn: Binding(get: { LoginItem.enabled }, set: { LoginItem.enabled = $0 }))
                     Toggle("Sound when a chat needs you", isOn: $store.soundForAttention)
@@ -128,22 +129,20 @@ struct SettingsView: View {
                 Section("Claude Code") {
                     LabeledContent("Hook") {
                         HStack {
-                            Text(ui.connected ? "Connected" : "Not connected")
-                                .foregroundStyle(ui.connected ? Color.green : Color.orange)
+                            if ui.hookHealth.needsRepair {
+                                Button(ui.hookHealth == .binaryStale ? "Update" : "Repair") { ui.connect() }
+                            }
                             Button(ui.connected ? "Disconnect" : "Connect") {
                                 ui.connected ? ui.disconnect() : ui.connect()
                             }
                         }
                     }
-                    LabeledContent("Accessibility") {
-                        HStack {
-                            Text(Continuer.canType ? "Allowed" : "Not allowed")
-                                .foregroundStyle(Continuer.canType ? Color.green : Color.orange)
-                            Button("Open Settings") { Self.openAccessibilitySettings() }
-                        }
-                    }
                     Text("Accessibility is needed only for Continue now, Auto, and retrying dropped connections in the Claude app.")
                         .font(.caption).foregroundStyle(.secondary)
+                    if store.chatTitlesUnavailable {
+                        Text("Chat titles unavailable: the Claude app changed its files")
+                            .font(.caption).foregroundStyle(Color.orange)
+                    }
                 }
                 Section("About") {
                     LabeledContent("Version", value: Self.version)
@@ -154,7 +153,6 @@ struct SettingsView: View {
                         Button("Check for Updates…") {
                             if let check = ui.checkForUpdates { check() } else { NSWorkspace.shared.open(Self.releasesURL) }
                         }
-                        Button("Show Log") { NSWorkspace.shared.activateFileViewerSelecting([Log.fileURL]) }
                     }
                 }
             }
@@ -164,6 +162,7 @@ struct SettingsView: View {
         // the window (resizable, size remembered) pick within it.
         .frame(minWidth: 400, idealWidth: 460, maxWidth: .infinity, minHeight: 280, idealHeight: 560, maxHeight: .infinity)
         .task(id: store.exactUsageOn) { await refreshAccount() }
+        .onAppear { store.refreshChatFilesHealth() }
         .confirmationDialog("Sign Claude Code out on this Mac?", isPresented: $confirmSignOut) {
             Button("Sign Out", role: .destructive) {
                 Task { @MainActor in
@@ -176,6 +175,62 @@ struct SettingsView: View {
             Text("Buddy uses Claude Code's sign-in, so this also signs out claude in Terminal. The Claude app keeps its own sign-in.")
         }
         .onAppear { ui.refreshConnection() }
+    }
+
+    /// Plain-words health of the pieces Buddy depends on; wording lives in StatusSummary.
+    private var statusSection: some View {
+        let summary = StatusSummary.build(
+            hookHealth: ui.hookHealth, appVersion: Self.shortVersion,
+            lastEvent: store.lastEventAt, now: Date(),
+            accessibilityGranted: Continuer.canType,
+            exactUsageOn: store.exactUsageOn, usage: store.usage)
+        return Section("Status") {
+            ForEach(summary.rows, id: \.label) { row in
+                LabeledContent(row.label) {
+                    HStack {
+                        Text(row.value)
+                            .foregroundStyle(row.tone == .attention ? Color.orange : row.tone == .good ? Color.green : Color.secondary)
+                            .multilineTextAlignment(.trailing)
+                        if row.label == "Accessibility", summary.offersAccessibilitySettings {
+                            Button("Open Privacy Settings") { Self.openAccessibilitySettings() }
+                        }
+                    }
+                }
+            }
+            HStack {
+                Button("Reveal Log") { Self.revealLog() }
+                Button("Copy Diagnostics") { Self.copyDiagnostics(ui: ui, store: store) }
+            }
+        }
+    }
+
+    static func copyDiagnostics(ui: UIState, store: Store) {
+        let info = Bundle.main.infoDictionary
+        #if arch(arm64)
+        let arch = "Apple silicon (arm64)"
+        #else
+        let arch = "Intel (x86_64)"
+        #endif
+        let text = StatusSummary.diagnostics(
+            hookHealth: ui.hookHealth, appVersion: shortVersion, appBuild: info?["CFBundleVersion"] as? String ?? "?",
+            lastEvent: store.lastEventAt, now: Date(), accessibilityGranted: Continuer.canType,
+            exactUsageOn: store.exactUsageOn, usage: store.usage,
+            chatTitlesUnavailable: store.chatTitlesUnavailable,
+            macOS: ProcessInfo.processInfo.operatingSystemVersionString, arch: arch)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    static func revealLog() {
+        if FileManager.default.fileExists(atPath: Log.fileURL.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([Log.fileURL])
+        } else {
+            NSWorkspace.shared.open(Log.fileURL.deletingLastPathComponent())
+        }
+    }
+
+    static var shortVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
     }
 
     /// Runs the sign-in, then checks again every few seconds for up to five minutes so the

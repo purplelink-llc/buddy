@@ -44,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUStandardUserDriverD
     var shrinkTask: Task<Void, Never>?
     var leaveTask: Task<Void, Never>?
     var expireTimer: Timer?
+    var hookHealthTimer: Timer?
 
     func applicationDidFinishLaunching(_ note: Notification) {
         let me = Bundle.main.bundleIdentifier ?? ""
@@ -53,7 +54,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUStandardUserDriverD
             return
         }
         ui = UIState(store: store, geometry: geometry)
-        ui.refreshConnection()
+        let info = Bundle.main.infoDictionary
+        ui.launchHealthCheck(currentVersion: "\(info?["CFBundleShortVersionString"] as? String ?? "?") (\(info?["CFBundleVersion"] as? String ?? "?"))")
+        hookHealthTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.ui.pollHookHealth() }
+        }
         ui.openSettings = { [weak self] in self?.showSettings() }
         updater = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: self)
         ui.checkForUpdates = { [weak self] in

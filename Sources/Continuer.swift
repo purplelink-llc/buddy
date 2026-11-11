@@ -86,6 +86,27 @@ struct ContinueSystem {
     )
 }
 
+/// The warning shown in the open list when a feature that types into Claude cannot, because
+/// the Accessibility permission is missing (an ad hoc rebuild loses it). Pure: the trust
+/// answer is passed in, so tests never call the real permission API.
+struct AccessibilityNotice: Equatable {
+    let title: String
+    let detail: String
+    let button: String
+    /// Where "Open Privacy Settings" goes.
+    static let settingsURL = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+
+    /// `autoOn`: Auto is on. `continueNow`: Continue now is on offer (chats still paused after
+    /// the reset). Nil when neither needs to type, or when typing is allowed.
+    static func needed(autoOn: Bool, continueNow: Bool, trusted: Bool) -> AccessibilityNotice? {
+        guard (autoOn || continueNow), !trusted else { return nil }
+        let feature = autoOn && continueNow ? "Auto and Continue now" : autoOn ? "Auto" : "Continue now"
+        return AccessibilityNotice(title: "Buddy can't type: Accessibility is off",
+                                   detail: "\(feature) needs it to type continue",
+                                   button: "Open Privacy Settings")
+    }
+}
+
 /// Buddy's backup for Claude Code's own auto-continue: types "continue" into chats that
 /// are still paused after a usage limit resets.
 ///

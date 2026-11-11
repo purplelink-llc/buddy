@@ -37,11 +37,66 @@ struct HookSetup {
         try? FileManager.default.removeItem(at: hookURL)
     }
 
-    /// Keeps the installed hook in step with the app after an update.
-    func refreshHookIfConnected() {
-        guard isConnected, let bundledHook,
-              !FileManager.default.contentsEqual(atPath: bundledHook.path, andPath: hookURL.path) else { return }
-        do { try installHook(from: bundledHook) } catch { Log.note("could not update the hook: \(error)") }
+    /// What is wrong, if anything, between Buddy, ~/.claude/settings.json and the installed hook.
+    enum Health: Equatable {
+        case healthy
+        /// Neither the settings entry nor the hook file: Buddy was never connected (or was disconnected).
+        case notInstalled
+        /// The hook file is there but settings.json no longer points at it.
+        case entryMissing
+        /// settings.json points at the hook but the file is gone.
+        case binaryMissing
+        /// The installed hook differs from the copy bundled in this version of Buddy.
+        case binaryStale
+
+        /// A state that was fine once and needs repair (as opposed to a first run).
+        var needsRepair: Bool { self != .healthy && self != .notInstalled }
+    }
+
+    /// Pure and cheap: reads settings.json and compares two small files. Takes the folders it
+    /// looks at, so tests can point it at a scratch home.
+    static func health(claudeDir: URL, bundledHook: URL?) -> Health {
+        let setup = HookSetup(claudeDir: claudeDir, bundledHook: bundledHook)
+        let fm = FileManager.default
+        let entry = setup.isConnected
+        let binary = fm.fileExists(atPath: setup.hookURL.path)
+        switch (entry, binary) {
+        case (false, false): return .notInstalled
+        case (false, true): return .entryMissing
+        case (true, false): return .binaryMissing
+        case (true, true):
+            if let bundledHook, fm.fileExists(atPath: bundledHook.path),
+               !fm.contentsEqual(atPath: bundledHook.path, andPath: setup.hookURL.path) { return .binaryStale }
+            return .healthy
+        }
+    }
+
+    /// What to do about the hook health at launch.
+    enum LaunchAction: Equatable { case nothing, silentRefresh, showBanner }
+
+    /// Pure. A stale hook binary right after an app update (or on the first launch with no
+    /// recorded version) is refreshed silently, as before hook health existed. A stale hook
+    /// with the version unchanged was changed by something else, so it gets the banner.
+    /// A missing settings entry or missing binary always gets the banner: Buddy never
+    /// silently re-adds an entry the user removed.
+    static func launchAction(lastSeenVersion: String?, currentVersion: String, health: Health) -> LaunchAction {
+        switch health {
+        case .healthy, .notInstalled: return .nothing
+        case .entryMissing, .binaryMissing: return .showBanner
+        case .binaryStale: return lastSeenVersion != currentVersion ? .silentRefresh : .showBanner
+        }
+    }
+
+    var health: Health { Self.health(claudeDir: claudeDir, bundledHook: bundledHook) }
+
+    /// Changes whenever settings.json, the installed hook or the bundled hook changes, so a
+    /// periodic check can skip the real work while nothing moved.
+    var changeSignature: String {
+        [settingsURL, hookURL, bundledHook].compactMap { $0 }.map { url -> String in
+            let a = try? FileManager.default.attributesOfItem(atPath: url.path)
+            let t = (a?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? -1
+            return "\(url.lastPathComponent):\(t):\((a?[.size] as? Int) ?? -1)"
+        }.joined(separator: "|")
     }
 
     enum SetupError: Error { case missingHook, unreadableSettings }
@@ -112,7 +167,7 @@ struct HookSetup {
         try (data + Data("\n".utf8)).write(to: settingsURL, options: .atomic)
     }
 
-    private func installHook(from source: URL) throws {
+    func installHook(from source: URL) throws {
         let fm = FileManager.default
         try fm.createDirectory(at: hookURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         let staged = hookURL.appendingPathExtension("new")

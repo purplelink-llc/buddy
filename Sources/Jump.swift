@@ -36,14 +36,48 @@ enum Jump: Equatable {
         text.range(of: pattern, options: .regularExpression) != nil
     }
 
+    /// How a jump to a Claude chat ended. Pure, so the message can be tested without opening anything.
+    enum Outcome: Equatable {
+        case opened
+        /// The deep link failed, so Buddy only brought the Claude app forward.
+        case fellBackToApp
+        /// Claude is not running, so there was nothing to open.
+        case notRunning
+
+        /// What the row says for a few seconds. Nil when the chat opened.
+        var message: String? {
+            switch self {
+            case .opened: return nil
+            case .fellBackToApp: return "Opened Claude; couldn't open that chat"
+            case .notRunning: return "Claude isn't running; couldn't open that chat"
+            }
+        }
+
+        /// `error` is what the system returned for the deep link, nil on success.
+        static func forDeepLink(claudeRunning: Bool, openError: Error?) -> Outcome {
+            if !claudeRunning { return .notRunning }
+            return openError == nil ? .opened : .fellBackToApp
+        }
+    }
+
+    /// `onChatOutcome` is called on the main actor for a Claude chat jump, with how it ended.
     @MainActor
-    func perform() {
+    func perform(onChatOutcome: ((Outcome) -> Void)? = nil) {
         switch self {
         case .desktopChat(let sessionID):
             // The Claude app's own deep link: opens that Code session's chat.
             guard Self.running(Self.claudeApp) != nil,
-                  let url = URL(string: "claude://code/continue?session=\(sessionID)") else { return }
-            NSWorkspace.shared.open(url)
+                  let url = URL(string: "claude://code/continue?session=\(sessionID)") else {
+                onChatOutcome?(Outcome.forDeepLink(claudeRunning: false, openError: nil))
+                return
+            }
+            NSWorkspace.shared.open(url, configuration: NSWorkspace.OpenConfiguration()) { _, error in
+                DispatchQueue.main.async {
+                    let outcome = Outcome.forDeepLink(claudeRunning: true, openError: error)
+                    if outcome == .fellBackToApp { Self.activate(Self.claudeApp) }
+                    onChatOutcome?(outcome)
+                }
+            }
         case .terminalTab(let bundleID, let tty):
             guard Self.running(bundleID) != nil else { return }
             if !Self.selectTab(bundleID: bundleID, tty: tty) { Self.activate(bundleID) }
@@ -63,7 +97,7 @@ enum Jump: Equatable {
         NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first
     }
 
-    private static func activate(_ bundleID: String) {
+    @MainActor private static func activate(_ bundleID: String) {
         guard let url = running(bundleID)?.bundleURL else { return }
         let config = NSWorkspace.OpenConfiguration()
         config.activates = true
