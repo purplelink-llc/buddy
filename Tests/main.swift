@@ -99,6 +99,30 @@ MainActor.assumeIsolated {
     expect(titles.title(for: "local_aaa-1") == "Fix \"login\" flow", "title with escaped quotes")
     expect(titles.title(for: "local_missing") == nil && titles.title(for: "../../etc") == nil, "missing or malformed id")
 
+    // Chat files changed: notice only when files exist and none is readable; logged once.
+    let ctRoot = scratch.appendingPathComponent("chatfiles", isDirectory: true)
+    func ctDir(_ name: String) -> URL {
+        let d = ctRoot.appendingPathComponent(name + "/acct/org", isDirectory: true)
+        try! FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        return d
+    }
+    var ctLogs: [String] = []
+    let none = ChatTitles(root: ctRoot.appendingPathComponent("none"), note: { ctLogs.append($0) })
+    expect(!none.filesUnreadable() && ctLogs.isEmpty, "no chat files: no notice, no log")
+    let allBad = ctDir("bad")
+    try! Data("{oops".utf8).write(to: allBad.appendingPathComponent("local_b1.json"))
+    try! Data(#"{"sessionId":"local_b2","name":"x"}"#.utf8).write(to: allBad.appendingPathComponent("local_b2.json"))
+    let badTitles = ChatTitles(root: ctRoot.appendingPathComponent("bad"), note: { ctLogs.append($0) })
+    expect(badTitles.filesUnreadable(), "all malformed: notice")
+    expect(badTitles.filesUnreadable() && badTitles.filesUnreadable() && ctLogs.count == 1, "logged once per launch, got \(ctLogs.count)")
+    let mixed = ctDir("mixed")
+    try! Data("{oops".utf8).write(to: mixed.appendingPathComponent("local_m1.json"))
+    try! Data(#"{"sessionId":"local_m2","title":"Fine"}"#.utf8).write(to: mixed.appendingPathComponent("local_m2.json"))
+    expect(!ChatTitles(root: ctRoot.appendingPathComponent("mixed"), note: { ctLogs.append($0) }).filesUnreadable(), "one good file: no notice")
+    let ctStore = Store(defaults: defaults, sound: { _ in }, titles: badTitles)
+    ctStore.refreshChatFilesHealth()
+    expect(ctStore.chatTitlesUnavailable, "store shows the notice when all files are malformed")
+
     var titleClock = Date()
     let named = Store(defaults: defaults, sound: { _ in }, now: { titleClock }, titles: titles)
     let appHost = "com.anthropic.claudefordesktop\tlocal_aaa-1\t"
@@ -250,6 +274,75 @@ MainActor.assumeIsolated {
     try! setup.disconnect()
     expect(!setup.isConnected && !FileManager.default.fileExists(atPath: setup.hookURL.path), "disconnect removes entries and the hook")
 
+    // MARK: hook health (scratch home only)
+    let healthDir = scratch.appendingPathComponent("health-home/.claude", isDirectory: true)
+    let healthBundled = scratch.appendingPathComponent("health-bundled-hook")
+    try! Data("#!/bin/sh\necho new\n".utf8).write(to: healthBundled)
+    func healthNow() -> HookSetup.Health { HookSetup.health(claudeDir: healthDir, bundledHook: healthBundled) }
+    expect(healthNow() == .notInstalled, "health: nothing installed yet")
+    let healthSetup = HookSetup(claudeDir: healthDir, bundledHook: healthBundled)
+    try! healthSetup.connect()
+    expect(healthNow() == .healthy && !healthNow().needsRepair, "health: connected is healthy")
+    let healthSig = healthSetup.changeSignature
+    try! Data("#!/bin/sh\necho old\n".utf8).write(to: healthSetup.hookURL)
+    expect(healthNow() == .binaryStale && healthNow().needsRepair, "health: a different hook binary is stale")
+    expect(healthSetup.changeSignature != healthSig, "health: signature moves when the hook changes")
+    try! healthSetup.connect()
+    expect(healthNow() == .healthy, "health: connect repairs a stale hook")
+    try! FileManager.default.removeItem(at: healthSetup.hookURL)
+    expect(healthNow() == .binaryMissing, "health: entry present, binary missing")
+    try! healthSetup.connect()
+    try! Data("{}".utf8).write(to: healthSetup.settingsURL)
+    expect(healthNow() == .entryMissing, "health: binary present, settings entry removed")
+    try! Data("not json".utf8).write(to: healthSetup.settingsURL)
+    expect(healthNow() == .entryMissing, "health: unreadable settings counts as entry missing")
+    expect(HookSetup.health(claudeDir: healthDir, bundledHook: nil) == .entryMissing, "health: no bundled hook never reads as stale")
+    try! Data("{}".utf8).write(to: healthSetup.settingsURL)
+    try! healthSetup.connect()
+    expect(HookSetup.health(claudeDir: healthDir, bundledHook: nil) == .healthy, "health: no bundled hook, connected is healthy")
+    // MARK: launch action after an update
+    typealias LA = HookSetup.LaunchAction
+    expect(HookSetup.launchAction(lastSeenVersion: "1 (1)", currentVersion: "2 (2)", health: .binaryStale) == LA.silentRefresh, "launch: updated app + stale hook refreshes silently")
+    expect(HookSetup.launchAction(lastSeenVersion: nil, currentVersion: "2 (2)", health: .binaryStale) == LA.silentRefresh, "launch: first launch + stale hook refreshes silently")
+    expect(HookSetup.launchAction(lastSeenVersion: "2 (2)", currentVersion: "2 (2)", health: .binaryStale) == LA.showBanner, "launch: same version + stale hook shows the banner")
+    expect(HookSetup.launchAction(lastSeenVersion: "1 (1)", currentVersion: "2 (2)", health: .entryMissing) == LA.showBanner, "launch: entry missing shows the banner even after an update")
+    expect(HookSetup.launchAction(lastSeenVersion: nil, currentVersion: "2 (2)", health: .entryMissing) == LA.showBanner, "launch: entry missing on first launch shows the banner")
+    expect(HookSetup.launchAction(lastSeenVersion: "1 (1)", currentVersion: "2 (2)", health: .binaryMissing) == LA.showBanner, "launch: binary missing shows the banner")
+    expect(HookSetup.launchAction(lastSeenVersion: "1 (1)", currentVersion: "2 (2)", health: .healthy) == LA.nothing, "launch: healthy does nothing")
+    expect(HookSetup.launchAction(lastSeenVersion: "1 (1)", currentVersion: "2 (2)", health: .notInstalled) == LA.nothing, "launch: not installed does nothing")
+    // end to end on a scratch home: silent refresh leaves the hook healthy
+    try! Data("#!/bin/sh\necho old\n".utf8).write(to: healthSetup.hookURL)
+    let launchHealth = HookSetup.health(claudeDir: healthDir, bundledHook: healthBundled)
+    if HookSetup.launchAction(lastSeenVersion: "1", currentVersion: "2", health: launchHealth) == .silentRefresh {
+        try! healthSetup.installHook(from: healthBundled)
+    }
+    expect(healthNow() == .healthy, "launch: silent refresh makes a stale hook healthy")
+    // MARK: Accessibility notice (trust is injected; the real permission API is never called)
+    typealias AXN = AccessibilityNotice
+    expect(AXN.needed(autoOn: false, continueNow: false, trusted: false) == nil, "ax notice: both features off, untrusted shows nothing")
+    expect(AXN.needed(autoOn: false, continueNow: false, trusted: true) == nil, "ax notice: both features off, trusted shows nothing")
+    expect(AXN.needed(autoOn: true, continueNow: false, trusted: true) == nil, "ax notice: Auto on and trusted shows nothing")
+    expect(AXN.needed(autoOn: false, continueNow: true, trusted: true) == nil, "ax notice: Continue now and trusted shows nothing")
+    let axAuto = AXN.needed(autoOn: true, continueNow: false, trusted: false)
+    expect(axAuto != nil && axAuto!.detail.hasPrefix("Auto needs"), "ax notice: Auto on and untrusted shows the notice")
+    let axNow = AXN.needed(autoOn: false, continueNow: true, trusted: false)
+    expect(axNow != nil && axNow!.detail.hasPrefix("Continue now needs"), "ax notice: Continue now and untrusted shows the notice")
+    expect(AXN.needed(autoOn: true, continueNow: true, trusted: false)?.detail.hasPrefix("Auto and Continue now") == true, "ax notice: both on and untrusted names both")
+    expect(axAuto?.title == "Buddy can't type: Accessibility is off" && axAuto?.button == "Open Privacy Settings", "ax notice: wording")
+    expect(AXN.settingsURL == "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", "ax notice: opens the Accessibility pane")
+    // MARK: Jump fallback message (decision is pure; nothing is opened)
+    struct JumpFail: Error {}
+    typealias JO = Jump.Outcome
+    expect(JO.forDeepLink(claudeRunning: true, openError: nil) == .opened, "jump: link opened")
+    expect(JO.opened.message == nil, "jump: success says nothing")
+    expect(JO.forDeepLink(claudeRunning: true, openError: JumpFail()) == .fellBackToApp, "jump: link failed falls back to the app")
+    expect(JO.fellBackToApp.message == "Opened Claude; couldn't open that chat", "jump: fallback wording")
+    expect(JO.forDeepLink(claudeRunning: false, openError: nil) == .notRunning && JO.notRunning.message != nil, "jump: Claude not running says so")
+    let jumpStore = Store()
+    jumpStore.showJumpNotice(JO.opened.message)
+    expect(jumpStore.jumpNotice == nil, "jump: success shows no notice")
+    jumpStore.showJumpNotice(JO.fellBackToApp.message)
+    expect(jumpStore.jumpNotice == "Opened Claude; couldn't open that chat", "jump: fallback shows the notice")
     // MARK: Auto continues each chat at its own reset (2026-10-20: chats paused together reset
     // at 8:50 and 9:40 PM, and the old single countdown waited for the later one)
     var autoClock = at("2026-10-20 20:40", "America/New_York")
@@ -843,6 +936,53 @@ do {
     try! Data(lines.joined(separator: "\n").utf8).write(to: projects.appendingPathComponent("a.jsonl"))
     let older = LimitKeeper.olderHits(in: projects.deletingLastPathComponent(), now: Date())
     expect(older.count == 1 && older.first?.hitAt == UsageScanner.parseDate("2026-11-01T20:00:00.000Z"), "one session limit backfilled, got \(older)")
+}
+
+// MARK: Settings status summary
+do {
+    let now = Date(timeIntervalSince1970: 1_800_000_000)
+    func summary(_ h: HookSetup.Health = .healthy, event: Date? = nil, ax: Bool = true, on: Bool = false, usage: UsageReading? = nil) -> StatusSummary {
+        StatusSummary.build(hookHealth: h, appVersion: "0.12.0", lastEvent: event, now: now, accessibilityGranted: ax, exactUsageOn: on, usage: usage)
+    }
+    func value(_ s: StatusSummary, _ label: String) -> String { s.rows.first { $0.label == label }?.value ?? "missing" }
+    expect(value(summary(), "Hook") == "Connected (hook 0.12.0)", "hook connected")
+    expect(value(summary(.notInstalled), "Hook") == "Not connected", "hook not connected")
+    expect(value(summary(.binaryStale), "Hook") == "Out of date", "hook out of date")
+    expect(value(summary(.entryMissing), "Hook") == "Needs repair" && value(summary(.binaryMissing), "Hook") == "Needs repair", "hook needs repair")
+    expect(value(summary(), "Last event") == "None since launch", "no event yet")
+    expect(value(summary(event: now.addingTimeInterval(-20)), "Last event") == "Just now", "event seconds ago")
+    expect(value(summary(event: now.addingTimeInterval(-120)), "Last event") == "2 min ago", "event minutes ago")
+    expect(value(summary(event: now.addingTimeInterval(-3 * 3600 - 5)), "Last event") == "3 h ago", "event hours ago")
+    expect(value(summary(event: now.addingTimeInterval(-2 * 86400)), "Last event") == "2 d ago", "event days ago")
+    expect(value(summary(event: now.addingTimeInterval(30)), "Last event") == "Just now", "event slightly in the future")
+    expect(value(summary(ax: true), "Accessibility") == "Granted" && !summary(ax: true).offersAccessibilitySettings, "AX granted")
+    expect(value(summary(ax: false), "Accessibility") == "Not granted" && summary(ax: false).offersAccessibilitySettings, "AX not granted offers settings")
+    expect(value(summary(on: false), "Exact usage").hasPrefix("Off"), "usage off")
+    expect(value(summary(on: true), "Exact usage").contains("waiting"), "usage on, no reading")
+    let est = UsageReading(session: nil, week: nil, exact: true)
+    expect(value(summary(on: true, usage: est), "Exact usage") == "On, reading from Anthropic", "usage exact")
+    var fail = UsageReading(session: nil, week: nil, exact: false); fail.note = "Anthropic did not answer"
+    expect(value(summary(on: true, usage: fail), "Exact usage") == "On, but unavailable: Anthropic did not answer", "usage unavailable with note")
+    fail.needsSignIn = true
+    expect(value(summary(on: true, usage: fail), "Exact usage") == "On, but Claude Code is not signed in", "usage needs sign-in")
+    expect(summary().rows.map(\.label) == ["Hook", "Last event", "Accessibility", "Exact usage"], "row order")
+    // Copy Diagnostics: fixtures full of private names must never reach the text.
+    let fixHome = NSHomeDirectory()
+    let secrets = ["Quarterly payroll migration", "acme-internal-api", "\(fixHome)/Projects/acme-internal-api", "-Users-ben-Projects-acme-internal-api", "session-7f3a9c", "my secret prompt"]
+    let projDir = URL(fileURLWithPath: fixHome).appendingPathComponent(".claude/projects/-Users-ben-Projects-acme-internal-api")
+    try? FileManager.default.createDirectory(at: projDir, withIntermediateDirectories: true)
+    try? "{\"title\":\"Quarterly payroll migration\",\"prompt\":\"my secret prompt\"}".write(to: projDir.appendingPathComponent("session-7f3a9c.jsonl"), atomically: true, encoding: .utf8)
+    var leaky = UsageReading(session: nil, week: nil, exact: false)
+    leaky.note = "failed reading \(fixHome)/Projects/acme-internal-api: Quarterly payroll migration"
+    let diag = StatusSummary.diagnostics(hookHealth: .healthy, appVersion: "0.12.0", appBuild: "34", lastEvent: now.addingTimeInterval(-180), now: now,
+                                         accessibilityGranted: true, exactUsageOn: true, usage: leaky,
+                                         chatTitlesUnavailable: true, macOS: "Version 15.1", arch: "Apple silicon (arm64)")
+    for secret in secrets { expect(!diag.contains(secret), "diagnostics leaks \(secret)") }
+    expect(!diag.contains(fixHome) && !diag.contains("/Users/"), "diagnostics has no home path")
+    for line in ["App: 0.12.0 (34)", "macOS: Version 15.1", "Hardware: Apple silicon (arm64)", "Hook: Connected (hook 0.12.0)",
+                 "Last event: 3 min ago", "Accessibility: Granted", "Exact usage: On, but unavailable", "Chat titles: unavailable"] {
+        expect(diag.split(separator: "\n").contains { $0 == Substring(line) }, "diagnostics missing line \(line)")
+    }
 }
 
 // MARK: auto-continue safety rules (Tests/ContinueTests.swift), on the main actor with a fake clock

@@ -45,7 +45,20 @@ struct NotchGeometry: Equatable {
 @MainActor
 final class UIState: ObservableObject {
     @Published var geometry: NotchGeometry
-    @Published var hovering = false
+    @Published var hovering = false {
+        // Re-check the permission each time the list opens; no polling.
+        didSet { if hovering && !oldValue { refreshAccessibility() } }
+    }
+    /// Whether Buddy may type into other apps; refreshed when the list opens.
+    @Published private(set) var accessibilityTrusted = true
+    func refreshAccessibility() {
+        let now = Continuer.canType
+        if now != accessibilityTrusted { accessibilityTrusted = now }
+    }
+    var accessibilityNotice: AccessibilityNotice? {
+        AccessibilityNotice.needed(autoOn: store.autoContinueOn, continueNow: store.limitHasReset,
+                                   trusted: accessibilityTrusted)
+    }
     let store: Store
     private var forward: AnyCancellable?
 
@@ -65,6 +78,9 @@ final class UIState: ObservableObject {
     var setAutomaticUpdates: ((Bool) -> Void)?
     @Published var automaticUpdates = true
     @Published private(set) var connected = true
+    @Published private(set) var hookHealth: HookSetup.Health = .healthy
+    private var healthSignature = ""
+    private var repairDismissed = false
     @Published private(set) var setupError: String?
     /// "Not now" on the first-run banner.
     private var setupDeferred: Bool {
@@ -73,11 +89,43 @@ final class UIState: ObservableObject {
     }
 
     /// The first-run banner: shown until Buddy is connected or you say not now.
-    var showSetup: Bool { !connected && !setupDeferred }
+    /// Also shown again when a connected hook later breaks (entry removed, file missing or stale),
+    /// until you say not now (for this run of Buddy only).
+    var showSetup: Bool {
+        switch hookHealth {
+        case .healthy: return false
+        case .notInstalled: return !setupDeferred
+        default: return !repairDismissed
+        }
+    }
 
     func refreshConnection() {
         connected = setup.isConnected
-        if connected { setup.refreshHookIfConnected() }
+        let health = setup.health
+        if health != hookHealth {
+            if health.needsRepair { repairDismissed = false }
+            hookHealth = health
+        }
+        healthSignature = setup.changeSignature
+    }
+
+    /// Launch check: after an app update, quietly reinstalls a stale hook (no banner); otherwise
+    /// the normal health check decides what to show. Records the version for the next launch.
+    func launchHealthCheck(currentVersion: String, defaults: UserDefaults = .standard) {
+        let key = "lastSeenAppVersion"
+        let action = HookSetup.launchAction(lastSeenVersion: defaults.string(forKey: key),
+                                            currentVersion: currentVersion, health: setup.health)
+        if action == .silentRefresh, let bundled = setup.bundledHook {
+            do { try setup.installHook(from: bundled) } catch { Log.note("could not update the hook: \(error)") }
+        }
+        defaults.set(currentVersion, forKey: key)
+        refreshConnection()
+    }
+
+    /// Runs about once a minute: does the real check only when one of the files changed.
+    func pollHookHealth() {
+        guard setup.changeSignature != healthSignature else { return }
+        refreshConnection()
     }
 
     func connect() {
@@ -97,7 +145,7 @@ final class UIState: ObservableObject {
     }
 
     func deferSetup() {
-        setupDeferred = true
+        if hookHealth.needsRepair { repairDismissed = true } else { setupDeferred = true }
         objectWillChange.send()
     }
 
@@ -160,8 +208,11 @@ final class UIState: ObservableObject {
 
     /// The usage-limit banner above the list, when chats are paused.
     static let bannerHeight: CGFloat = 50
+    static let noticeHeight: CGFloat = 34
     var bannerSpace: CGFloat {
         (store.pausedSessions.isEmpty ? 0 : Self.bannerHeight) + (showSetup ? Self.bannerHeight : 0)
+            + (accessibilityNotice == nil ? 0 : Self.bannerHeight)
+            + (store.jumpNotice == nil ? 0 : Self.noticeHeight)
     }
 
     // MARK: Swipe to clear

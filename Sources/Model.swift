@@ -133,6 +133,9 @@ final class Store: ObservableObject {
     private let sound: (String) -> Void
     private let now: () -> Date
     private let titles: ChatTitles
+    /// True when the Claude app's chat files exist but none can be read (it changed its format):
+    /// titles fall back to folder names, and Settings says so.
+    @Published private(set) var chatTitlesUnavailable = false
     private var peekTask: Task<Void, Never>?
     private var limitTask: Task<Void, Never>?
     /// Called with the sessions still paused a while after the limit reset (manual: false)
@@ -144,6 +147,9 @@ final class Store: ObservableObject {
     var onConnectionLost: (() -> Void)?
     /// What the continue run is doing, shown in the limit banner.
     @Published var continueStatus: String?
+    /// A few seconds of plain words when a jump to a chat could not reach that chat.
+    @Published private(set) var jumpNotice: String?
+    private var jumpNoticeTask: Task<Void, Never>?
     private var watchdog: Timer?
 
     init(defaults: UserDefaults = .standard,
@@ -303,7 +309,11 @@ final class Store: ObservableObject {
         visible.filter { $0.mood != .done || !$0.acknowledged }.map(\.mood).max() ?? .idle
     }
 
+    /// When the newest hook event reached Buddy this run (nil until one does), for Settings.
+    private(set) var lastEventAt: Date?
+
     func apply(_ events: [HookEvent]) {
+        if let newest = events.map(\.date).max(), newest > (lastEventAt ?? .distantPast) { lastEventAt = newest }
         for e in events { apply(e) }
         expire()
         updateWatchdog()
@@ -424,6 +434,14 @@ final class Store: ObservableObject {
               now().timeIntervalSince(s.titleChecked) > (soon ? 3 : 20) else { return }
         s.titleChecked = now()
         if let title = titles.title(for: s.host.desktopSessionID) { s.title = title }
+        else { refreshChatFilesHealth() }
+    }
+
+    /// Looks at the chat files again (Settings opening, a chat with no title) and keeps
+    /// `chatTitlesUnavailable` current. The log line is written once per launch.
+    func refreshChatFilesHealth() {
+        let broken = titles.filesUnreadable()
+        if broken != chatTitlesUnavailable { chatTitlesUnavailable = broken }
     }
 
     private func flag(_ s: inout Session, _ text: String) {
@@ -537,7 +555,21 @@ final class Store: ObservableObject {
     func open(_ id: String) {
         guard let s = sessions[id] else { return }
         dismiss(id)
-        Jump.target(host: s.host, cwd: s.cwd).perform()
+        Jump.target(host: s.host, cwd: s.cwd).perform { [weak self] outcome in
+            self?.showJumpNotice(outcome.message)
+        }
+    }
+
+    static let jumpNoticeSeconds: Double = 5
+
+    func showJumpNotice(_ text: String?) {
+        guard let text else { return }
+        jumpNotice = text
+        jumpNoticeTask?.cancel()
+        jumpNoticeTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.jumpNoticeSeconds))
+            if !Task.isCancelled { self?.jumpNotice = nil }
+        }
     }
 
     // MARK: - Usage limits
@@ -853,10 +885,46 @@ enum Transcript {
 final class ChatTitles {
     let root: URL
     private var paths: [String: URL] = [:]
+    private var loggedUnreadable = false
+    private let note: (String) -> Void
 
     init(root: URL = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Application Support/Claude/claude-code-sessions", isDirectory: true)) {
+        .appendingPathComponent("Library/Application Support/Claude/claude-code-sessions", isDirectory: true),
+         note: @escaping (String) -> Void = { Log.note($0) }) {
         self.root = root
+        self.note = note
+    }
+
+    /// True when chat files exist but none has a readable title field. No files at all is
+    /// normal (no notice); one readable file is enough. Logs the first time this is true.
+    func filesUnreadable() -> Bool {
+        let files = allFiles()
+        guard !files.isEmpty else { return false }
+        if files.contains(where: { Self.hasTitleField($0) }) { return false }
+        if !loggedUnreadable {
+            loggedUnreadable = true
+            note("chat titles unavailable: found \(files.count) Claude app chat files but could not read any (the Claude app may have changed its files)")
+        }
+        return true
+    }
+
+    private static func hasTitleField(_ url: URL) -> Bool {
+        guard let handle = FileHandle(forReadingAtPath: url.path) else { return false }
+        defer { try? handle.close() }
+        guard let head = try? handle.read(upToCount: 16 * 1024) else { return false }
+        return String(decoding: head, as: UTF8.self).range(of: #""title":"((?:[^"\\]|\\.)*)""#, options: .regularExpression) != nil
+    }
+
+    private func allFiles() -> [URL] {
+        let fm = FileManager.default
+        var files: [URL] = []
+        for account in (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? [] {
+            for org in (try? fm.contentsOfDirectory(at: account, includingPropertiesForKeys: nil)) ?? [] {
+                files += ((try? fm.contentsOfDirectory(at: org, includingPropertiesForKeys: nil)) ?? [])
+                    .filter { $0.lastPathComponent.hasPrefix("local_") && $0.pathExtension == "json" }
+            }
+        }
+        return files
     }
 
     func title(for id: String) -> String? {

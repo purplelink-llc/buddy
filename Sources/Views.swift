@@ -400,24 +400,73 @@ struct PillView: View {
         return "\(chats) · backup types continue after the reset"
     }
 
-    /// First run: Buddy sees nothing until Claude Code is told to report to it.
+    /// First run, or the hook broke later: Buddy sees nothing until Claude Code reports to it.
     private var setupBanner: some View {
-        HStack(spacing: 9) {
+        let words = Self.setupWords(ui.hookHealth)
+        return HStack(spacing: 9) {
             Image(systemName: "link").foregroundStyle(.orange).font(.system(size: 13, weight: .semibold))
             VStack(alignment: .leading, spacing: 2) {
-                Text("Connect Buddy to Claude Code").font(.system(size: 12, weight: .semibold))
-                Text(ui.setupError ?? "Adds a small hook to ~/.claude/settings.json (backup kept)")
+                Text(words.title).font(.system(size: 12, weight: .semibold))
+                Text(ui.setupError ?? words.detail)
                     .font(.system(size: 11)).foregroundStyle(ui.setupError == nil ? .secondary : Color.orange).lineLimit(1)
             }
             Spacer(minLength: 4)
             Button("Not now") { ui.deferSetup() }.buttonStyle(.bordered).controlSize(.small)
-            Button("Connect") { ui.connect() }.buttonStyle(.borderedProminent).tint(.orange).controlSize(.small)
+            Button(words.button) { ui.connect() }.buttonStyle(.borderedProminent).tint(.orange).controlSize(.small)
         }
         .padding(.horizontal, 10)
         .frame(height: UIState.bannerHeight - 6)
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.14)))
         .padding(.horizontal, 8)
         .padding(.bottom, 6)
+    }
+
+    /// Auto or Continue now needs Accessibility and Buddy does not have it.
+    private func accessibilityBanner(_ notice: AccessibilityNotice) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange).font(.system(size: 13, weight: .semibold))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(notice.title).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                Text(notice.detail).font(.system(size: 11)).foregroundStyle(Color.orange).lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            Button(notice.button) {
+                if let url = URL(string: AccessibilityNotice.settingsURL) { NSWorkspace.shared.open(url) }
+            }
+            .buttonStyle(.borderedProminent).tint(.orange).controlSize(.small)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: UIState.bannerHeight - 6)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.14)))
+        .padding(.horizontal, 8)
+        .padding(.bottom, 6)
+    }
+
+    /// Shown for a few seconds when a jump could not open the chat itself.
+    private func jumpNoticeRow(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11))
+            .foregroundStyle(Color.orange)
+            .lineLimit(1)
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: UIState.noticeHeight - 6)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.14)))
+            .padding(.horizontal, 8)
+            .padding(.bottom, 6)
+    }
+
+    static func setupWords(_ health: HookSetup.Health) -> (title: String, detail: String, button: String) {
+        switch health {
+        case .entryMissing:
+            return ("Buddy's hook is missing from Claude Code", "Add it back to ~/.claude/settings.json (backup kept)", "Reconnect")
+        case .binaryMissing:
+            return ("Buddy's hook program is missing", "Reinstall it in ~/.claude/hooks", "Reinstall")
+        case .binaryStale:
+            return ("Update Buddy's hook", "The installed hook is older than this version of Buddy", "Update")
+        default:
+            return ("Connect Buddy to Claude Code", "Adds a small hook to ~/.claude/settings.json (backup kept)", "Connect")
+        }
     }
 
     /// Plan usage at the top of the list, one full-width line per window. "≈" marks Buddy's local estimate.
@@ -522,6 +571,8 @@ struct PillView: View {
     @ViewBuilder private var rows: some View {
         usageRow
         if ui.showSetup { setupBanner }
+        if let notice = ui.accessibilityNotice { accessibilityBanner(notice) }
+        if let text = store.jumpNotice { jumpNoticeRow(text) }
         if !store.pausedSessions.isEmpty { limitBanner }
         if store.ordered.isEmpty {
             Text("No Claude sessions right now")
