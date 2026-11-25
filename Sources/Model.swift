@@ -136,6 +136,7 @@ final class Store: ObservableObject {
     /// True when the Claude app's chat files exist but none can be read (it changed its format):
     /// titles fall back to folder names, and Settings says so.
     @Published private(set) var chatTitlesUnavailable = false
+    private var chatCheckRunning = false
     private var peekTask: Task<Void, Never>?
     private var limitTask: Task<Void, Never>?
     /// Called with the sessions still paused a while after the limit reset (manual: false)
@@ -434,7 +435,7 @@ final class Store: ObservableObject {
               now().timeIntervalSince(s.titleChecked) > (soon ? 3 : 20) else { return }
         s.titleChecked = now()
         if let title = titles.title(for: s.host.desktopSessionID) { s.title = title }
-        else { refreshChatFilesHealth() }
+        else { refreshChatFilesHealthInBackground() }
     }
 
     /// Looks at the chat files again (Settings opening, a chat with no title) and keeps
@@ -442,6 +443,38 @@ final class Store: ObservableObject {
     func refreshChatFilesHealth() {
         let broken = titles.filesUnreadable()
         if broken != chatTitlesUnavailable { chatTitlesUnavailable = broken }
+    }
+
+    /// Same check, but the files are read on `queue` and the result is published here on the
+    /// main thread. One check at a time; a request made while one is running is dropped.
+    /// `done` runs on the main thread after the state is updated.
+    func refreshChatFilesHealthInBackground(queue: DispatchQueue = DispatchQueue(label: "llc.purplelink.Buddy.chat-health", qos: .utility),
+                                            done: (@MainActor (Bool) -> Void)? = nil) {
+        guard !chatCheckRunning else { return }
+        chatCheckRunning = true
+        let titles = titles
+        queue.async { [weak self] in
+            let broken = titles.filesUnreadable()
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.chatCheckRunning = false
+                    if broken != self.chatTitlesUnavailable { self.chatTitlesUnavailable = broken }
+                    done?(broken)
+                }
+            }
+        }
+    }
+
+    /// Runs once from the launch path, so Settings and the log reflect a broken chat file
+    /// before anyone opens Settings. Writes one log line with the result.
+    func checkChatFilesAtLaunch(queue: DispatchQueue = DispatchQueue(label: "llc.purplelink.Buddy.chat-health", qos: .utility),
+                                log: @escaping (String) -> Void = { Log.note($0) },
+                                done: (@MainActor (Bool) -> Void)? = nil) {
+        refreshChatFilesHealthInBackground(queue: queue) { broken in
+            log("launch chat-file check: \(broken ? "chat titles unavailable (notice shown)" : "ok")")
+            done?(broken)
+        }
     }
 
     private func flag(_ s: inout Session, _ text: String) {
@@ -561,6 +594,11 @@ final class Store: ObservableObject {
     }
 
     static let jumpNoticeSeconds: Double = 5
+
+    func clearJumpNotice() {
+        jumpNoticeTask?.cancel()
+        jumpNotice = nil
+    }
 
     func showJumpNotice(_ text: String?) {
         guard let text else { return }
@@ -882,10 +920,13 @@ enum Transcript {
 
 /// Reads chat titles from the Claude app's per-chat files. Only the first 16 KB is read: the
 /// title sits in the first few KB, and the rest of the file is a large tool list.
-final class ChatTitles {
+/// `filesUnreadable()` may run on a background queue (it touches only lock-guarded state);
+/// `title(for:)` and its cache are main-thread only.
+final class ChatTitles: @unchecked Sendable {
     let root: URL
     private var paths: [String: URL] = [:]
     private var loggedUnreadable = false
+    private let logLock = NSLock()
     private let note: (String) -> Void
 
     init(root: URL = FileManager.default.homeDirectoryForCurrentUser
@@ -895,24 +936,41 @@ final class ChatTitles {
         self.note = note
     }
 
-    /// True when chat files exist but none has a readable title field. No files at all is
-    /// normal (no notice); one readable file is enough. Logs the first time this is true.
+    /// True when chat files exist but none is usable. A file is healthy when it is a JSON object:
+    /// a title missing from the first 16 KB, or absent altogether, is normal (new chats, long
+    /// tool lists first). Only files that do not parse as an object trip the notice. No files at
+    /// all is normal (no notice); one healthy file is enough. Logs the first time this is true.
     func filesUnreadable() -> Bool {
         let files = allFiles()
         guard !files.isEmpty else { return false }
-        if files.contains(where: { Self.hasTitleField($0) }) { return false }
-        if !loggedUnreadable {
-            loggedUnreadable = true
+        if files.contains(where: { Self.isHealthy($0) }) { return false }
+        logLock.lock()
+        let first = !loggedUnreadable
+        loggedUnreadable = true
+        logLock.unlock()
+        if first {
             note("chat titles unavailable: found \(files.count) Claude app chat files but could not read any (the Claude app may have changed its files)")
         }
         return true
     }
 
-    private static func hasTitleField(_ url: URL) -> Bool {
+    /// Files above this size are not parsed in full;
+    /// they count as healthy when they start like a JSON object.
+    static let maxParseBytes = 4 * 1024 * 1024
+
+    private static func isHealthy(_ url: URL) -> Bool {
         guard let handle = FileHandle(forReadingAtPath: url.path) else { return false }
         defer { try? handle.close() }
-        guard let head = try? handle.read(upToCount: 16 * 1024) else { return false }
-        return String(decoding: head, as: UTF8.self).range(of: #""title":"((?:[^"\\]|\\.)*)""#, options: .regularExpression) != nil
+        guard let head = try? handle.read(upToCount: 16 * 1024), !head.isEmpty else { return false }
+        // Fast path: a title in the first 16 KB is the normal case.
+        if String(decoding: head, as: UTF8.self).range(of: #""title":"((?:[^"\\]|\\.)*)""#, options: .regularExpression) != nil { return true }
+        let size = ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber)?.intValue ?? 0
+        if size > maxParseBytes {
+            return head.first(where: { $0 != 0x20 && $0 != 0x0A && $0 != 0x0D && $0 != 0x09 }) == UInt8(ascii: "{")
+        }
+        try? handle.seek(toOffset: 0)
+        guard let all = try? handle.readToEnd() else { return false }
+        return (try? JSONSerialization.jsonObject(with: all)) is [String: Any]
     }
 
     private func allFiles() -> [URL] {

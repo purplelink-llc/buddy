@@ -62,14 +62,14 @@ Claude Code's hook events are documented. However, three Buddy features depend o
 
 When one of these breaks, Buddy says so where it can:
 
-- If the chat files exist but none can be read, Settings says chat titles are unavailable and the list shows folder names.
-- If the `claude://` link cannot open a chat, an orange line says so for 5 seconds and Buddy brings the Claude app forward.
-- If Auto or Continue now is on without Accessibility, the open list shows an orange line with an Open Privacy Settings button.
+- If the chat files exist but none can be read, Settings says chat titles are unavailable and the list shows folder names. A file counts as readable when it parses as a JSON object, with or without a title; only files that fail to parse, or are not an object, trip the notice. Files of 4 MB or more are not parsed and count as readable if they start with `{`. Buddy checks once at launch, so Settings and the log report it before Settings is opened.
+- If the `claude://` link cannot open a chat, an orange line says so for 5 seconds. Jumping also brings the Claude app forward when the link fails and Claude is running. Continue now and Auto show the same line, write it to the log, and type nothing; Auto skips that chat and tries again later, and the skipped try does not count against its three.
+- If Auto or Continue now is on without Accessibility, the open list shows an orange line with an Open Privacy Settings button. Buddy checks the permission at launch and every time the list opens, whether by hover, for a waiting session or for the setup banner.
 - If the hook entry or `~/.claude/hooks/buddy-hook` is missing or out of date, Buddy shows the Connect or Update banner. After a Buddy update, an older hook is refreshed without a banner.
 
 **Settings → Status** lists the hook, the last event, Accessibility and exact usage, and **Copy Diagnostics** copies the same lines as plain text (no paths, transcripts or chat titles) for an issue report.
 
-Some limits remain. Buddy cannot tell when a link opens the wrong chat. Accessibility is re-checked when the list opens, so a change shows up the next time you open it. Because these features rely on parts of the Claude app that Anthropic does not document, an update can still break one in a way Buddy does not detect. Please open an issue when that happens.
+Some limits remain. Buddy cannot tell when a link opens the wrong chat. Accessibility is not watched while the list stays open, so a change shows up the next time you open it. Because these features rely on parts of the Claude app that Anthropic does not document, an update can still break one in a way Buddy does not detect. Please open an issue when that happens.
 
 ## Build from source
 

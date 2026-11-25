@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.13.1
+
+### Fixed
+- **Accessibility notice.** Buddy reads the permission at launch and each time the list opens (hover, a waiting session, the setup banner), so the orange Open Privacy Settings line is no longer stale when the list opens by itself.
+- **Chat titles unavailable.** A chat file that parses as a JSON object now counts as readable even with no title in its first 16 KB. Only files that fail to parse, or are not an object, show the notice. Files of 4 MB or more are not parsed and count as readable if they start with `{`.
+- **Chat file check at launch.** Buddy checks the chat files once at launch, off the main thread, so Settings and the log report a problem before Settings is opened.
+- **Continue now and Auto when the link fails.** If the `claude://` link cannot open the chat, Buddy shows the orange "couldn't open that chat" line, logs it and types nothing. Before, it could type into whichever chat was in front. Auto skips that chat and tries again later.
+
 ## 0.13.0
 
 ### Added

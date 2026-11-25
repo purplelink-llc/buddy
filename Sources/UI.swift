@@ -46,14 +46,15 @@ struct NotchGeometry: Equatable {
 final class UIState: ObservableObject {
     @Published var geometry: NotchGeometry
     @Published var hovering = false {
-        // Re-check the permission each time the list opens; no polling.
-        didSet { if hovering && !oldValue { refreshAccessibility() } }
+        didSet { listStateChanged() }
     }
-    /// Whether Buddy may type into other apps; refreshed when the list opens.
-    @Published private(set) var accessibilityTrusted = true
-    func refreshAccessibility() {
-        let now = Continuer.canType
-        if now != accessibilityTrusted { accessibilityTrusted = now }
+    /// Whether Buddy may type into other apps. Checked at launch and each time the list opens
+    /// (hover, auto-open for a waiting session, setup banner); no polling.
+    @Published private(set) var accessibilityTrusted: Bool
+    private var axMonitor = AccessibilityMonitor(check: { Continuer.canType })
+    func refreshAccessibility() { listStateChanged() }
+    private func listStateChanged() {
+        if axMonitor.update(open: expanded) { accessibilityTrusted = axMonitor.trusted }
     }
     var accessibilityNotice: AccessibilityNotice? {
         AccessibilityNotice.needed(autoOn: store.autoContinueOn, continueNow: store.limitHasReset,
@@ -65,7 +66,12 @@ final class UIState: ObservableObject {
     init(store: Store, geometry: NotchGeometry) {
         self.store = store
         self.geometry = geometry
-        forward = store.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
+        self.accessibilityTrusted = axMonitor.trusted
+        forward = store.objectWillChange.sink { [weak self] in
+            self?.objectWillChange.send()
+            // The store changes just before `expanded` does; look once it has settled.
+            DispatchQueue.main.async { self?.listStateChanged() }
+        }
     }
 
     // MARK: Connecting to Claude Code

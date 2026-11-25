@@ -40,7 +40,8 @@ struct ContinueSystem {
     var secondsSinceTypingOrClicking: () -> Double
     /// The modifiers a key state holds down right now.
     var modifierFlags: (CGEventSourceStateID) -> CGEventFlags
-    var openChat: (_ sessionID: String) -> Void
+    /// Opens the chat through the claude:// link and says how that ended (the jump path's own outcome).
+    var openChat: (_ sessionID: String) async -> Jump.Outcome
     var raiseWindow: () -> Void
     var sendToTab: (_ bundleID: String, _ tty: String) -> Void
     /// The message box of the chat with this title (see `ClaudeUI.prompt(inChatTitled:)`).
@@ -70,7 +71,11 @@ struct ContinueSystem {
                 .min() ?? 0
         },
         modifierFlags: { CGEventSource.flagsState($0) },
-        openChat: { Jump.desktopChat(sessionID: $0).perform() },
+        openChat: { sessionID in
+            await withCheckedContinuation { continuation in
+                Jump.desktopChat(sessionID: sessionID).perform { continuation.resume(returning: $0) }
+            }
+        },
         raiseWindow: { ClaudeUI.raiseWindow() },
         sendToTab: { Continuer.sendToTab(bundleID: $0, tty: $1) },
         prompt: { ClaudeUI.prompt(inChatTitled: $0) },
@@ -196,8 +201,15 @@ final class Continuer {
                 }
                 guard store.sessions[session.id]?.mood == .paused else { continue }
                 store.continueStatus = "Continuing \(index + 1) of \(sessions.count)…"
-                Self.system.openChat(sessionID)
+                let opened = await Self.system.openChat(sessionID)
                 borrowedFocus = true
+                if opened != .opened {
+                    // The link failed: whatever chat is in front is not this one, so type nothing.
+                    store.showJumpNotice(opened.message)
+                    Log.note("continue \(current.name): skipped: couldn't open that chat (\(opened))")
+                    if !manual { store.continueSkipped(session.id) }
+                    continue
+                }
                 let outcome = await continueOpenChat(sessionID: sessionID, storeID: session.id, title: current.title,
                                                      tryAgainFirst: tryAgainFirst)
                 if outcome.hasPrefix("sent") { sent += 1 }
@@ -242,7 +254,7 @@ final class Continuer {
             if attempt == 24 {
                 // Still nothing after about six seconds: open the chat again and bring its
                 // window forward (after waking or unlocking, the first open can get lost).
-                system.openChat(sessionID)
+                _ = await system.openChat(sessionID)
                 system.raiseWindow()
                 await system.sleep(.milliseconds(1200))
             }

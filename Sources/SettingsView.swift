@@ -162,7 +162,7 @@ struct SettingsView: View {
         // the window (resizable, size remembered) pick within it.
         .frame(minWidth: 400, idealWidth: 460, maxWidth: .infinity, minHeight: 280, idealHeight: 560, maxHeight: .infinity)
         .task(id: store.exactUsageOn) { await refreshAccount() }
-        .onAppear { store.refreshChatFilesHealth() }
+        .onAppear { store.refreshChatFilesHealthInBackground() }
         .confirmationDialog("Sign Claude Code out on this Mac?", isPresented: $confirmSignOut) {
             Button("Sign Out", role: .destructive) {
                 Task { @MainActor in
