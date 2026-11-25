@@ -89,3 +89,30 @@ struct StatusSummary: Equatable {
         return Row(label: "Exact usage", value: "On, but unavailable\(why)", tone: .attention)
     }
 }
+
+/// Remembers whether Buddy may type into other apps. Trust is read once at launch and again each
+/// time the list goes from closed to open, however it opens (hover, a waiting session, setup).
+/// No polling. The check is injected so tests never call the real permission API.
+struct AccessibilityMonitor {
+    private(set) var trusted: Bool
+    private var wasOpen = false
+    private let check: () -> Bool
+
+    /// Reads the permission now (the launch check).
+    init(check: @escaping () -> Bool) {
+        self.check = check
+        self.trusted = check()
+    }
+
+    /// Call with the list's current open state whenever it may have changed.
+    /// Returns true when the trust value changed.
+    @discardableResult
+    mutating func update(open: Bool) -> Bool {
+        defer { wasOpen = open }
+        guard open && !wasOpen else { return false }
+        let now = check()
+        guard now != trusted else { return false }
+        trusted = now
+        return true
+    }
+}

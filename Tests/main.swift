@@ -111,7 +111,7 @@ MainActor.assumeIsolated {
     expect(!none.filesUnreadable() && ctLogs.isEmpty, "no chat files: no notice, no log")
     let allBad = ctDir("bad")
     try! Data("{oops".utf8).write(to: allBad.appendingPathComponent("local_b1.json"))
-    try! Data(#"{"sessionId":"local_b2","name":"x"}"#.utf8).write(to: allBad.appendingPathComponent("local_b2.json"))
+    try! Data(#"["not","an","object"]"#.utf8).write(to: allBad.appendingPathComponent("local_b2.json"))
     let badTitles = ChatTitles(root: ctRoot.appendingPathComponent("bad"), note: { ctLogs.append($0) })
     expect(badTitles.filesUnreadable(), "all malformed: notice")
     expect(badTitles.filesUnreadable() && badTitles.filesUnreadable() && ctLogs.count == 1, "logged once per launch, got \(ctLogs.count)")
@@ -119,9 +119,40 @@ MainActor.assumeIsolated {
     try! Data("{oops".utf8).write(to: mixed.appendingPathComponent("local_m1.json"))
     try! Data(#"{"sessionId":"local_m2","title":"Fine"}"#.utf8).write(to: mixed.appendingPathComponent("local_m2.json"))
     expect(!ChatTitles(root: ctRoot.appendingPathComponent("mixed"), note: { ctLogs.append($0) }).filesUnreadable(), "one good file: no notice")
+    // (a) valid file whose title sits after 16 KB, (b) valid file with no title key, (d) small titled file.
+    let lateRoot = ctDir("late")
+    let lateFill = String(repeating: "y", count: 40_000)
+    try! Data(#"{"sessionId":"local_l1","big":"\#(lateFill)","title":"Late"}"#.utf8).write(to: lateRoot.appendingPathComponent("local_l1.json"))
+    expect(!ChatTitles(root: ctRoot.appendingPathComponent("late"), note: { ctLogs.append($0) }).filesUnreadable(), "title after 16 KB: healthy")
+    let noKey = ctDir("nokey")
+    try! Data(#"{"sessionId":"local_n1","cwd":"/p"}"#.utf8).write(to: noKey.appendingPathComponent("local_n1.json"))
+    expect(!ChatTitles(root: ctRoot.appendingPathComponent("nokey"), note: { ctLogs.append($0) }).filesUnreadable(), "no title key: healthy")
+    let small = ctDir("small")
+    try! Data(#"{"sessionId":"local_s1","title":"Hi"}"#.utf8).write(to: small.appendingPathComponent("local_s1.json"))
+    expect(!ChatTitles(root: ctRoot.appendingPathComponent("small"), note: { ctLogs.append($0) }).filesUnreadable(), "small titled file: healthy")
+    // (c) truncated JSON with no title in the head is malformed.
+    let trunc = ctDir("trunc")
+    try! Data(#"{"sessionId":"local_t1","big":"\#(lateFill)"#.utf8).write(to: trunc.appendingPathComponent("local_t1.json"))
+    expect(ChatTitles(root: ctRoot.appendingPathComponent("trunc"), note: { ctLogs.append($0) }).filesUnreadable(), "malformed large file: notice")
     let ctStore = Store(defaults: defaults, sound: { _ in }, titles: badTitles)
     ctStore.refreshChatFilesHealth()
     expect(ctStore.chatTitlesUnavailable, "store shows the notice when all files are malformed")
+
+    // Launch path: the check runs off the main thread, publishes on main, logs one line.
+    var launchLogs: [String] = []
+    var offMain: Bool?
+    let launchTitles = ChatTitles(root: ctRoot.appendingPathComponent("bad"), note: { _ in offMain = !Thread.isMainThread })
+    let launchStore = Store(defaults: defaults, sound: { _ in }, titles: launchTitles)
+    expect(!launchStore.chatTitlesUnavailable, "launch store starts without the notice")
+    var launchFinished = false
+    launchStore.checkChatFilesAtLaunch(queue: DispatchQueue(label: "test.chat-health"), log: { launchLogs.append($0) }, done: { _ in launchFinished = true })
+    var launchWaited = 0
+    while !launchFinished && launchWaited < 500 {
+        RunLoop.main.run(until: Date().addingTimeInterval(0.01)); launchWaited += 1
+    }
+    expect(launchStore.chatTitlesUnavailable, "launch check sets the notice for a malformed chat file")
+    expect(offMain == true, "launch check read the files off the main thread")
+    expect(launchLogs.count == 1 && launchLogs[0].contains("unavailable"), "launch check logs one line, got \(launchLogs)")
 
     var titleClock = Date()
     let named = Store(defaults: defaults, sound: { _ in }, now: { titleClock }, titles: titles)
@@ -330,6 +361,20 @@ MainActor.assumeIsolated {
     expect(AXN.needed(autoOn: true, continueNow: true, trusted: false)?.detail.hasPrefix("Auto and Continue now") == true, "ax notice: both on and untrusted names both")
     expect(axAuto?.title == "Buddy can't type: Accessibility is off" && axAuto?.button == "Open Privacy Settings", "ax notice: wording")
     expect(AXN.settingsURL == "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility", "ax notice: opens the Accessibility pane")
+    // MARK: Accessibility trust is read at launch and whenever the list opens
+    var axTrust = false
+    var axReads = 0
+    var axMon = AccessibilityMonitor(check: { axReads += 1; return axTrust })
+    expect(axReads == 1 && axMon.trusted == false, "ax monitor: reads trust at launch")
+    axTrust = true
+    expect(axMon.update(open: false) == false && axMon.trusted == false && axReads == 1, "ax monitor: closed list does not re-read")
+    expect(axMon.update(open: true) == true && axMon.trusted == true && axReads == 2, "ax monitor: auto-open picks up a grant made while closed")
+    axTrust = false
+    expect(axMon.update(open: true) == false && axMon.trusted == true && axReads == 2, "ax monitor: staying open does not re-read")
+    _ = axMon.update(open: false)
+    expect(axMon.update(open: true) == true && axMon.trusted == false && axReads == 3, "ax monitor: reopening picks up a revoke")
+    var axMon2 = AccessibilityMonitor(check: { true })
+    expect(axMon2.trusted == true && axMon2.update(open: true) == false, "ax monitor: unchanged trust reports no change")
     // MARK: Jump fallback message (decision is pure; nothing is opened)
     struct JumpFail: Error {}
     typealias JO = Jump.Outcome

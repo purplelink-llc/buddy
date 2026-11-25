@@ -32,6 +32,8 @@ final class FakeMac {
     var sent: [String] = []
     var pressed = 0
     var opened: [String] = []
+    /// How the claude:// link ends; anything but .opened is a failed open.
+    var openResult: Jump.Outcome = .opened
     private var selectedAll = false
 
     func box(_ id: pid_t, title: String, text initial: String = "") -> AXUIElement {
@@ -78,7 +80,7 @@ final class FakeMac {
             screenLocked: { self.locked },
             secondsSinceTypingOrClicking: { self.idleSeconds },
             modifierFlags: { $0 == .hidSystemState ? self.stuck : [] },
-            openChat: { self.opened.append($0) },
+            openChat: { self.opened.append($0); return self.openResult },
             raiseWindow: {},
             sendToTab: { _, _ in },
             prompt: { self.chats[$0] },
@@ -282,6 +284,32 @@ func continueTests() async {
     Continuer.system = switching
     outcome = await continueChat()
     expect(outcome == "skipped: no Prompt box appeared" && fake.posted.isEmpty, "a box that isn't the same twice in a row is never used, got \(outcome)")
+
+    // MARK: 7. The claude:// link fails: banner, and not a single key into whatever chat is in front
+    for failure in [Jump.Outcome.fellBackToApp, .notRunning] {
+        for manual in [true, false] {
+            box = setUp()
+            fake.openResult = failure
+            store.clearJumpNotice()
+            expect(store.jumpNotice == nil, "no banner before the run")
+            let session = store.sessions[id]!
+            fake.front = Jump.claudeApp
+            fake.chats[session.title] = box  // typing would succeed here if Buddy tried
+            fake.focused = fake.box(92_100, title: "Whatever is in front")
+            await continuer.continueAll([session], manual: manual)
+            expect(fake.opened == ["local_cont-\(id)"], "the link was tried once, got \(fake.opened)")
+            expect(fake.posted.isEmpty && fake.sent.isEmpty && fake.pressed == 0, "failed open (\(failure), manual \(manual)): nothing typed or pressed")
+            expect(fake.textIn(fake.focused!) == "", "the chat in front is untouched")
+            expect(store.jumpNotice == failure.message && failure.message != nil, "failed open shows the jump banner, got \(store.jumpNotice ?? "nil")")
+            expect(paused, "the chat is still paused")
+        }
+    }
+    box = setUp()
+    fake.openResult = .opened
+    let liveSession = store.sessions[id]!
+    fake.chats[liveSession.title] = box
+    await continuer.continueAll([liveSession], manual: true)
+    expect(fake.sent == ["continue"] && !paused, "when the link opens, continue is still typed, got \(fake.sent)")
 
     Continuer.system = .live
 }

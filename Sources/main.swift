@@ -54,6 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, SPUStandardUserDriverD
             return
         }
         ui = UIState(store: store, geometry: geometry)
+        store.checkChatFilesAtLaunch()  // off the main thread; Settings and the log know before it opens
         let info = Bundle.main.infoDictionary
         ui.launchHealthCheck(currentVersion: "\(info?["CFBundleShortVersionString"] as? String ?? "?") (\(info?["CFBundleVersion"] as? String ?? "?"))")
         hookHealthTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
